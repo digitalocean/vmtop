@@ -1,0 +1,53 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * Measure vcpu activity by scheduling period.
+ *
+ * Exposed metrics:
+ *  - distribution of the time a running vcpu spends out of the guest (on cpu,
+ *    but outside of vmentry): vcpu_out_of_guest_usec
+ *  - distribution of how many times a vcpu enters the guest per scheduling
+ *    period: per_sched_vmentry_count
+ *  - distribution of scheduling period durations: sched_period_usec
+ *  - distribution of the periods spent inside the guest (between vmentry and
+ *    vmexit): vcpu_period_guest_runtime_usec
+ *  - distribution of the total time spent in the guest per scheduling period:
+ *    vcpu_sched_period_guest_runtime_usec
+ *
+ * Run as root with: ./bpftrace guesttime.bpf
+ */
+
+t:sched:sched_switch /strncmp("CPU", args->next_comm, 3) == 0/ {
+    @sched_start_ts[args->next_pid] = nsecs;
+    @out_of_guest_ts[args->next_pid] = nsecs;
+    @kvm_entry_count[args->next_pid] = 0;
+    @kvm_runtime[args->next_pid] = 0;
+}                                                                               
+                                                                                
+t:sched:sched_switch /strncmp("CPU", args->prev_comm, 3) == 0/ {
+    @per_sched_vmentry_count = hist(@kvm_entry_count[args->prev_pid]);
+    @sched_period_usec = hist((nsecs - @sched_start_ts[args->prev_pid]) / 1000);
+    @vcpu_sched_period_guest_runtime_usec = hist(@kvm_runtime[args->prev_pid] / 1000);
+    delete(@sched_start_ts[args->prev_pid]);
+    delete(@kvm_entry_count[args->prev_pid]);
+    delete(@kvm_runtime[args->prev_pid]);
+}
+
+t:kvm:kvm_entry / @sched_start_ts[tid] != 0/ {
+    @vm_entry_ts[tid] = nsecs;
+    @vcpu_out_of_guest_usec = hist((nsecs - @out_of_guest_ts[tid]) / 1000);
+    @kvm_entry_count[tid] += 1;
+}
+t:kvm:kvm_exit /@vm_entry_ts[tid] != 0/ {
+    @vcpu_period_guest_runtime_usec = hist((nsecs - @vm_entry_ts[tid]) / 1000);
+    @kvm_runtime[tid] += nsecs - @vm_entry_ts[tid];
+    @out_of_guest_ts[tid] = nsecs;
+    delete(@vm_entry_ts[tid]);
+}
+
+END {
+    clear(@sched_start_ts);
+    clear(@kvm_entry_count);
+    clear(@kvm_runtime);
+    clear(@out_of_guest_ts);
+}

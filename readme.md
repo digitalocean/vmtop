@@ -1,5 +1,28 @@
 # KVM trace stats
 
+Collection of ad-hoc tools for monitoring various performance aspects of KVM.
+The tools are in varied state of maintenance, feel free to reach out if you
+have questions or suggestions for improvements.
+
+
+## steal.py
+
+Monitor load and steal for qemu VMs, various filtering capabilities.
+
+
+## guesttime.bt
+
+`bpftrace` tool to check statistically how long a vCPU spends inside the guest
+when it is scheduled in.
+
+
+## Core-scheduling and KVM
+
+The `core-sched-stats.py` script allows to ensure that the core scheduling
+feature works properly and account the time spent by a vCPU in various
+scheduling mode (co-scheduled with idle, with a compatible task or a foreign
+task).
+
 Those script work with perf trace recorded like that:
 ```
 sudo perf record -e kvm:kvm_entry -e kvm:kvm_exit -e sched:sched_switch -e sched:sched_waking -o perf.data -a sleep 60

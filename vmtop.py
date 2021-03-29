@@ -210,14 +210,14 @@ class VM:
     def get_threads(self):
         for tid in os.listdir('/proc/%s/task/' % self.vm_pid):
             fname = '/proc/%s/task/%s/comm' % (self.vm_pid, tid)
-            with open(fname, 'r') as _f:
-                comm = _f.read()
-            tid = int(tid)
-#            try:
-            thread = QemuThread(self.vm_pid, tid, self.machine)
-#            except:
-#                # Ignore threads that disappear for now (temporary workers)
-#                continue
+            try:
+                with open(fname, 'r') as _f:
+                    comm = _f.read()
+                tid = int(tid)
+                thread = QemuThread(self.vm_pid, tid, self.machine)
+            except:
+                # Ignore threads that disappear for now (temporary workers)
+                continue
             if 'CPU' in comm:
                 self.vcpu_threads[tid] = thread
                 for n in thread.nodes:
@@ -531,7 +531,7 @@ class VmTop:
         elif self.args.sort == 'tx':
             self.args.sort = 'tx_rate'
 
-        self.args.vm_format = '{:<17s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}{:<13s}{:<13s}'
+        self.args.vm_format = '{:<19s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}{:<13s}{:<13s}'
 
         # filter by node
         if self.args.node is not None:

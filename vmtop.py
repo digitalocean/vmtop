@@ -2,13 +2,11 @@
 
 # TODO:
 #  - scan for new/old VMs
+#  - CSV output
 #  - check vcpu pinning at each loop
 #  - parallel scrape
 #  - show VM sizes
 #  - filter by name, not just PID
-#  - add I/O stats per VM
-#    - /proc/<pid>/io for disk
-#    - /sys/devices/virtual/net/%s/statistics/<rx,tx>_bytes
 
 import subprocess
 import operator
@@ -102,6 +100,38 @@ class QemuThread:
         self.pc_steal = self.diff_steal / self.diff_ts * 100
 
 
+class NIC:
+    def __init__(self, vm, name):
+        self.vm = vm
+        self.name = name
+        self.last_scrape_ts = None
+        self.last_rx = None
+        self.last_tx = None
+        self.tx_rate = None
+        self.rx_rate = None
+        self.get_stats()
+
+    def get_stats(self):
+        self.last_scrape_ts = time.time()
+        # Flipped rx/tx to reflect the VM point of view
+        with open('/sys/devices/virtual/net/%s/statistics/tx_bytes' %
+                  self.name, 'r') as f:
+            self.last_rx = int(f.read().strip())
+        with open('/sys/devices/virtual/net/%s/statistics/rx_bytes' %
+                  self.name, 'r') as f:
+            self.last_tx = int(f.read().strip())
+
+    def refresh_stats(self):
+        prev_scrape_ts = self.last_scrape_ts
+        prev_rx = self.last_rx
+        prev_tx = self.last_tx
+        self.get_stats()
+        diff_sec = self.last_scrape_ts - prev_scrape_ts
+        mb = 1024.0 * 1024.0
+        self.rx_rate = (self.last_rx - prev_rx) / diff_sec / mb
+        self.tx_rate = (self.last_tx - prev_tx) / diff_sec / mb
+
+
 class VM:
     def __init__(self, args, vm_pid, machine):
         self.args = args
@@ -119,6 +149,7 @@ class VM:
         self.vcpu_threads = {}
         self.emulator_threads = {}
         self.vhost_threads = {}
+        self.nics = {}
 
         self.last_io_scrape_ts = None
         self.last_io_read_bytes = None
@@ -127,8 +158,8 @@ class VM:
         self.get_vm_info()
         self.get_threads()
         self.get_node_memory()
+        self.get_nic_info()
         self.refresh_io_stats()
-
 
     def __str__(self):
         if self.args.vcpu:
@@ -160,7 +191,21 @@ class VM:
                     "%0.02f %%" % self.emulators_sum_pc_util,
                     "%0.02f %%" % self.emulators_sum_pc_steal,
                     "%0.02f MB/s" % self.mb_read,
-                    "%0.02f MB/s" % self.mb_write,)
+                    "%0.02f MB/s" % self.mb_write,
+                    "%0.02f MB/s" % self.rx_rate,
+                    "%0.02f MB/s" % self.tx_rate)
+
+    def get_nic_info(self):
+        cmd = ['virsh', 'domiflist', self.name]
+        lines = subprocess.check_output(
+                cmd, shell=False).strip().decode("utf-8").split('\n')
+        for l in lines:
+            fields = l.split()
+            if len(fields) == 1:
+                continue
+            if fields[0] == 'Interface':
+                continue
+            self.nics[fields[0]] = NIC(self, fields[0])
 
     def get_threads(self):
         for tid in os.listdir('/proc/%s/task/' % self.vm_pid):
@@ -273,6 +318,13 @@ class VM:
         mb = 1024.0*1024.0
         self.mb_read = (self.last_io_read_bytes - prev_io_read_bytes) / diff_sec / mb
         self.mb_write = (self.last_io_write_bytes - prev_io_write_bytes) / diff_sec / mb
+
+        self.tx_rate = 0
+        self.rx_rate = 0
+        for n in self.nics.values():
+            n.refresh_stats()
+            self.tx_rate += n.tx_rate
+            self.rx_rate += n.rx_rate
 
         # copy to node stats
         self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
@@ -434,7 +486,9 @@ class VmTop:
         parser.add_argument('-s', '--sort', type=str,
                             choices=['vcpu_util', 'vcpu_steal',
                                      'vhost_util', 'vhost_steal',
-                                     'emulators_util', 'emulators_steal'],
+                                     'disk_read', 'disk_write',
+                                     'emulators_util', 'emulators_steal',
+                                     'rx', 'tx'],
                             default='vcpu_util',
                             help='sort order for VM list, default: vcpu_util')
         parser.add_argument('-p', '--pid', type=str,
@@ -460,7 +514,7 @@ class VmTop:
             self.args.sort = 'vcpu_sum_pc_util'
         elif self.args.sort == 'vcpu_steal':
             self.args.sort = 'vcpu_sum_pc_steal'
-        if self.args.sort == 'vhost_util':
+        elif self.args.sort == 'vhost_util':
             self.args.sort = 'vhost_sum_pc_util'
         elif self.args.sort == 'vhost_steal':
             self.args.sort = 'vhost_sum_pc_steal'
@@ -468,8 +522,16 @@ class VmTop:
             self.args.sort = 'emulators_sum_pc_util'
         elif self.args.sort == 'emulators_steal':
             self.args.sort = 'emulators_sum_pc_steal'
+        elif self.args.sort == 'disk_read':
+            self.args.sort = 'mb_read'
+        elif self.args.sort == 'disk_write':
+            self.args.sort = 'mb_write'
+        elif self.args.sort == 'rx':
+            self.args.sort = 'rx_rate'
+        elif self.args.sort == 'tx':
+            self.args.sort = 'tx_rate'
 
-        self.args.vm_format = '{:<17s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}'
+        self.args.vm_format = '{:<17s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}{:<13s}{:<13s}'
 
         # filter by node
         if self.args.node is not None:
@@ -497,7 +559,8 @@ class VmTop:
                         print(self.args.vm_format.format(
                             "Name", "PID", "vcpu util", "vcpu steal",
                             "vhost util", "vhost steal", "emu util",
-                            "emu steal", "disk read", "disk write"))
+                            "emu steal", "disk read", "disk write",
+                            "rx", "tx"))
                 for vm in (sorted(node.node_vms.values(),
                                   key=operator.attrgetter(self.args.sort),
                                   reverse=True)):

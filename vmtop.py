@@ -1,11 +1,8 @@
 #!/usr/bin/python3
 
 # TODO:
-#  - vhost
-#  - don't iterate by node, make vcpus account in the node
-#    - if a VM belongs to multiple nodes, show it in both + warning
-#    - confirm node at each poll
 #  - scan for new/old VMs
+#  - check vcpu pinning at each loop
 #  - show VM sizes
 #  - filter by name, not just PID
 #  - add I/O stats per VM
@@ -31,7 +28,7 @@ def mixrange(s):
 
 
 class QemuThread:
-    def __init__(self, vm_pid, thread_pid, machine):
+    def __init__(self, vm_pid, thread_pid, machine, vhost=False):
         self.vm_pid = vm_pid
         self.machine = machine
         self.thread_pid = thread_pid
@@ -39,6 +36,7 @@ class QemuThread:
         self.last_cputime = None
         self.last_scrape_ts = None
         self.nodes = None
+        self.vhost = vhost
         self.pc_steal = 0.0
         self.pc_util = 0.0
         self.diff_steal = 0
@@ -49,32 +47,45 @@ class QemuThread:
         self.get_schedstats()
 
     def get_thread_name(self):
-        with open('/proc/%s/task/%s/comm' % (self.vm_pid, self.thread_pid),
-                  'r') as f:
-            self.thread_name = f.read()
+        if self.vhost is True:
+            fpath = '/proc/%s/comm' % (self.thread_pid)
+        else:
+            fpath = '/proc/%s/task/%s/comm' % (self.vm_pid, self.thread_pid)
+        with open(fpath, 'r') as f:
+            self.thread_name = f.read().strip()
 
     def get_thread_cpuset(self):
-        with open('/proc/%s/task/%s/cpuset' % (self.vm_pid, self.thread_pid),
-                  'r') as f:
+        if self.vhost is True:
+            fpath = '/proc/%s/cpuset' % (self.thread_pid)
+        else:
+            fpath = '/proc/%s/task/%s/cpuset' % (self.vm_pid, self.thread_pid)
+        with open(fpath, 'r') as f:
             self.cpuset = f.read().strip()
         self.nodes = self.machine.get_nodes(self.cpuset)
         if len(self.nodes) > 1:
+            # kvm-pit is not pinned, but also mostly idle, no need to
+            # warn here
+            if 'kvm-pit' in self.thread_name:
+                return
             print("Warning: VCPU %d from VM %d belongs to multiple nodes, "
                   "node utilization may be inaccurate" % (self.thread_pid,
-                                                          self.vm_pid))
+                      self.vm_pid))
+
+    def get_schedstats(self):
+        if self.vhost is True:
+            fpath = '/proc/%s/schedstat' % (self.thread_pid)
+        else:
+            fpath = '/proc/%s/task/%s/schedstat' % (self.vm_pid, self.thread_pid)
+        with open(fpath, 'r') as f:
+            stats = f.read().split(' ')
+        self.last_cputime = int(stats[0])
+        self.last_stealtime = int(stats[1])
+        self.last_scrape_ts = time.time() * 1000000000
 
     def __repr__(self):
         return "%s (%s), util: %0.02f %%, steal: %0.02f %%" % (
                 self.thread_name, self.thread_pid, self.pc_util,
                 self.pc_steal)
-
-    def get_schedstats(self):
-        with open('/proc/%s/task/%s/schedstat' % (
-                  self.vm_pid, self.thread_pid), 'r') as f:
-            stats = f.read().split(' ')
-        self.last_cputime = int(stats[0])
-        self.last_stealtime = int(stats[1])
-        self.last_scrape_ts = time.time() * 1000000000
 
     def refresh_stats(self):
         prev_steal_time = self.last_stealtime
@@ -104,20 +115,23 @@ class VM:
 
         self.vcpu_threads = {}
         self.emulator_threads = {}
+        self.vhost_threads = {}
         self.get_vm_info()
         self.get_threads()
         self.get_node_memory()
 
-    def __repr__(self):
-        vm = "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, " \
-             "emulators util: %0.02f%%, emulators steal: %0.02f%%" % (
-                self.name, self.vm_pid,
-                self.vcpu_sum_pc_util,
-                self.vcpu_sum_pc_steal,
-                self.emulators_sum_pc_util,
-                self.emulators_sum_pc_steal)
-
+    def __str__(self):
         if self.args.vcpu:
+            vm = "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, " \
+                    "vhost util: %0.02f%%, vhost steal: %0.02f%%" \
+                 "emulators util: %0.02f%%, emulators steal: %0.02f%%" % (
+                    self.name, self.vm_pid,
+                    self.vcpu_sum_pc_util,
+                    self.vcpu_sum_pc_steal,
+                    self.vhost_sum_pc_util,
+                    self.vhost_sum_pc_steal,
+                    self.emulators_sum_pc_util,
+                    self.emulators_sum_pc_steal)
             vcpu_util = ""
             for v in self.vcpu_threads.values():
                 vcpu_util = "%s\n    - %s" % (vcpu_util, v)
@@ -127,10 +141,15 @@ class VM:
                     emulators_util = "%s\n    - %s" % (emulators_util, v)
             return "%s%s%s" % (vm, vcpu_util, emulators_util)
         else:
-            return vm
+            return self.args.vm_format.format(
+                    self.name, str(self.vm_pid),
+                    "%0.02f %%" % self.vcpu_sum_pc_util,
+                    "%0.02f %%" % self.vcpu_sum_pc_steal,
+                    "%0.02f %%" % self.vhost_sum_pc_util,
+                    "%0.02f %%" % self.vhost_sum_pc_steal,
+                    "%0.02f %%" % self.emulators_sum_pc_util,
 
-    def __str__(self):
-        return self.__repr__()
+                    "%0.02f %%" % self.emulators_sum_pc_steal)
 
     def get_threads(self):
         for tid in os.listdir('/proc/%s/task/' % self.vm_pid):
@@ -151,6 +170,15 @@ class VM:
                 self.emulator_threads[tid] = thread
                 for n in thread.nodes:
                     n.emulator_threads[tid] = thread
+
+        # Find vhost threads
+        cmd = ["pgrep", str(self.vm_pid)]
+        pids = subprocess.check_output(
+                cmd, shell=False).strip().decode("utf-8").split('\n')
+        for p in pids:
+            tid = int(p)
+            thread = QemuThread(self.vm_pid, tid, self.machine, vhost=True)
+            self.vhost_threads[tid] = thread
 
     def get_vm_info(self):
         with open('/proc/%s/cmdline' % self.vm_pid, mode='r') as fh:
@@ -189,6 +217,13 @@ class VM:
             self.vcpu_sum_pc_util += vcpu.pc_util
             self.vcpu_sum_pc_steal += vcpu.pc_steal
 
+        self.vhost_sum_pc_util = 0
+        self.vhost_sum_pc_steal = 0
+        for vhost in self.vhost_threads.values():
+            vhost.refresh_stats()
+            self.vhost_sum_pc_util += vhost.pc_util
+            self.vhost_sum_pc_steal += vhost.pc_steal
+
         self.emulators_sum_pc_util = 0
         self.emulators_sum_pc_steal = 0
         to_remove = []
@@ -205,8 +240,10 @@ class VM:
 #        for r in to_remove:
 #            del emulators
         self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
-        self.primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
         self.primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
+        self.primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
+        self.primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
+        self.primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
         self.primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
 
 
@@ -230,6 +267,8 @@ class Node:
     def clear_stats(self):
         self.vcpu_sum_pc_util = 0
         self.vcpu_sum_pc_steal = 0
+        self.vhost_sum_pc_util = 0
+        self.vhost_sum_pc_steal = 0
         self.emulators_sum_pc_util = 0
         self.emulators_sum_pc_steal = 0
 
@@ -358,6 +397,7 @@ class VmTop:
                             help='limit to top X VMs per node')
         parser.add_argument('-s', '--sort', type=str,
                             choices=['vcpu_util', 'vcpu_steal',
+                                     'vhost_util', 'vhost_steal',
                                      'emulators_util', 'emulators_steal'],
                             default='vcpu_util',
                             help='sort order for VM list, default: vcpu_util')
@@ -384,10 +424,16 @@ class VmTop:
             self.args.sort = 'vcpu_sum_pc_util'
         elif self.args.sort == 'vcpu_steal':
             self.args.sort = 'vcpu_sum_pc_steal'
+        if self.args.sort == 'vhost_util':
+            self.args.sort = 'vhost_sum_pc_util'
+        elif self.args.sort == 'vhost_steal':
+            self.args.sort = 'vhost_sum_pc_steal'
         elif self.args.sort == 'emulators_util':
             self.args.sort = 'emulators_sum_pc_util'
         elif self.args.sort == 'emulators_steal':
             self.args.sort = 'emulators_sum_pc_steal'
+
+        self.args.vm_format = '{:<17s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}'
 
         # filter by node
         if self.args.node is not None:
@@ -411,6 +457,11 @@ class VmTop:
                 node = self.machine.nodes[node]
                 if self.args.vm:
                     print("Node %d:" % node.id)
+                    if not self.args.vcpu:
+                        print(self.args.vm_format.format(
+                            "Name", "PID", "vcpu util", "vcpu steal",
+                            "vhost util", "vhost steal", "emu util",
+                            "emu steal"))
                 for vm in (sorted(node.node_vms.values(),
                                   key=operator.attrgetter(self.args.sort),
                                   reverse=True)):

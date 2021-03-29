@@ -313,7 +313,9 @@ class VM:
         self.primary_node.vm_mem_allocated += self.mem_allocated
 
     def refresh_stats(self):
-        self.get_node_memory()
+        # FIXME: this is too heavy to run at each loop, but we would need
+        # it to track VMs that move between nodes
+#        self.get_node_memory()
         # sum of all vcpu stats
         self.vcpu_sum_pc_util = 0
         self.vcpu_sum_pc_steal = 0

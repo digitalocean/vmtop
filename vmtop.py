@@ -3,9 +3,12 @@
 # TODO:
 #  - scan for new/old VMs
 #  - check vcpu pinning at each loop
+#  - parallel scrape
 #  - show VM sizes
 #  - filter by name, not just PID
 #  - add I/O stats per VM
+#    - /proc/<pid>/io for disk
+#    - /sys/devices/virtual/net/%s/statistics/<rx,tx>_bytes
 
 import subprocess
 import operator
@@ -116,9 +119,16 @@ class VM:
         self.vcpu_threads = {}
         self.emulator_threads = {}
         self.vhost_threads = {}
+
+        self.last_io_scrape_ts = None
+        self.last_io_read_bytes = None
+        self.last_io_write_bytes = None
+
         self.get_vm_info()
         self.get_threads()
         self.get_node_memory()
+        self.refresh_io_stats()
+
 
     def __str__(self):
         if self.args.vcpu:
@@ -148,8 +158,9 @@ class VM:
                     "%0.02f %%" % self.vhost_sum_pc_util,
                     "%0.02f %%" % self.vhost_sum_pc_steal,
                     "%0.02f %%" % self.emulators_sum_pc_util,
-
-                    "%0.02f %%" % self.emulators_sum_pc_steal)
+                    "%0.02f %%" % self.emulators_sum_pc_steal,
+                    "%0.02f MB/s" % self.mb_read,
+                    "%0.02f MB/s" % self.mb_write,)
 
     def get_threads(self):
         for tid in os.listdir('/proc/%s/task/' % self.vm_pid):
@@ -191,6 +202,17 @@ class VM:
             if cmdline[i] == '-smp':
                 self.total_vcpu_count = int(cmdline[i+1].split(',')[0])
 
+    def refresh_io_stats(self):
+        self.last_io_scrape_ts = time.time()
+        with open('/proc/%s/io' % self.vm_pid, 'r') as f:
+            stats = f.read().split('\n')
+        for l in stats:
+            l = l.split(' ')
+            if l[0] == 'read_bytes:':
+                self.last_io_read_bytes = int(l[1])
+            if l[0] == 'write_bytes:':
+                self.last_io_write_bytes = int(l[1])
+
     def get_node_memory(self):
         cmd = ["numastat", "-p", str(self.vm_pid)]
         usage = subprocess.check_output(
@@ -217,6 +239,7 @@ class VM:
             self.vcpu_sum_pc_util += vcpu.pc_util
             self.vcpu_sum_pc_steal += vcpu.pc_steal
 
+        # vhost
         self.vhost_sum_pc_util = 0
         self.vhost_sum_pc_steal = 0
         for vhost in self.vhost_threads.values():
@@ -224,6 +247,7 @@ class VM:
             self.vhost_sum_pc_util += vhost.pc_util
             self.vhost_sum_pc_steal += vhost.pc_steal
 
+        # emulators
         self.emulators_sum_pc_util = 0
         self.emulators_sum_pc_steal = 0
         to_remove = []
@@ -239,6 +263,18 @@ class VM:
         # FIXME
 #        for r in to_remove:
 #            del emulators
+
+        # disk
+        prev_io_scrape_ts = self.last_io_scrape_ts
+        prev_io_read_bytes = self.last_io_read_bytes
+        prev_io_write_bytes = self.last_io_write_bytes
+        self.refresh_io_stats()
+        diff_sec = self.last_io_scrape_ts - prev_io_scrape_ts
+        mb = 1024.0*1024.0
+        self.mb_read = (self.last_io_read_bytes - prev_io_read_bytes) / diff_sec / mb
+        self.mb_write = (self.last_io_write_bytes - prev_io_write_bytes) / diff_sec / mb
+
+        # copy to node stats
         self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
         self.primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
         self.primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
@@ -433,7 +469,7 @@ class VmTop:
         elif self.args.sort == 'emulators_steal':
             self.args.sort = 'emulators_sum_pc_steal'
 
-        self.args.vm_format = '{:<17s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}'
+        self.args.vm_format = '{:<17s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}'
 
         # filter by node
         if self.args.node is not None:
@@ -461,7 +497,7 @@ class VmTop:
                         print(self.args.vm_format.format(
                             "Name", "PID", "vcpu util", "vcpu steal",
                             "vhost util", "vhost steal", "emu util",
-                            "emu steal"))
+                            "emu steal", "disk read", "disk write"))
                 for vm in (sorted(node.node_vms.values(),
                                   key=operator.attrgetter(self.args.sort),
                                   reverse=True)):

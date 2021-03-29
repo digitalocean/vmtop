@@ -542,7 +542,10 @@ class VmTop:
 
     def loop(self):
         while True:
-            time.sleep(self.args.refresh)
+            try:
+                time.sleep(self.args.refresh)
+            except KeyboardInterrupt:
+                return
             print("\n%s" % datetime.datetime.today())
             self.machine.clear_stats()
             self.machine.refresh_stats()

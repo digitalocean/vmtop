@@ -1,11 +1,12 @@
 #!/usr/bin/python3
 
 # TODO:
-#  - scan for new/old VMs
-#  - CSV output
-#  - check vcpu pinning at each loop
+#  - resources accounting at each loop
+#  - CSV output of allocation and usage
+#  - system-wide metrics
+#  - arbitrary groups of processes metrics (kernel threads,
+#    middleware, etc)
 #  - parallel scrape
-#  - show VM sizes
 #  - filter by name, not just PID
 
 import subprocess
@@ -73,15 +74,21 @@ class QemuThread:
                       self.vm_pid))
 
     def get_schedstats(self):
+        self.last_scrape_ts = time.time() * 1000000000
         if self.vhost is True:
             fpath = '/proc/%s/schedstat' % (self.thread_pid)
         else:
             fpath = '/proc/%s/task/%s/schedstat' % (self.vm_pid, self.thread_pid)
-        with open(fpath, 'r') as f:
-            stats = f.read().split(' ')
+        try:
+            with open(fpath, 'r') as f:
+                stats = f.read().split(' ')
+        except FileNotFoundError:
+            # On VM teardown return 0
+            self.last_cputime = 0
+            self.last_stealtime = 0
+            return
         self.last_cputime = int(stats[0])
         self.last_stealtime = int(stats[1])
-        self.last_scrape_ts = time.time() * 1000000000
 
     def __repr__(self):
         return "%s (%s), util: %0.02f %%, steal: %0.02f %%" % (
@@ -114,12 +121,18 @@ class NIC:
     def get_stats(self):
         self.last_scrape_ts = time.time()
         # Flipped rx/tx to reflect the VM point of view
-        with open('/sys/devices/virtual/net/%s/statistics/tx_bytes' %
-                  self.name, 'r') as f:
-            self.last_rx = int(f.read().strip())
-        with open('/sys/devices/virtual/net/%s/statistics/rx_bytes' %
-                  self.name, 'r') as f:
-            self.last_tx = int(f.read().strip())
+        try:
+            with open('/sys/devices/virtual/net/%s/statistics/tx_bytes' %
+                      self.name, 'r') as f:
+                self.last_rx = int(f.read().strip())
+            with open('/sys/devices/virtual/net/%s/statistics/rx_bytes' %
+                      self.name, 'r') as f:
+                self.last_tx = int(f.read().strip())
+        except FileNotFoundError:
+            # VM Teardown
+            self.last_rx = 0
+            self.last_tx = 0
+            return
 
     def refresh_stats(self):
         prev_scrape_ts = self.last_scrape_ts
@@ -239,8 +252,6 @@ class VM:
                     n.vcpu_threads[tid] = thread
             else:
                 self.emulator_threads[tid] = thread
-                for n in thread.nodes:
-                    n.emulator_threads[tid] = thread
 
         # Find vhost threads
         cmd = ["pgrep", str(self.vm_pid)]
@@ -264,8 +275,15 @@ class VM:
 
     def refresh_io_stats(self):
         self.last_io_scrape_ts = time.time()
-        with open('/proc/%s/io' % self.vm_pid, 'r') as f:
-            stats = f.read().split('\n')
+        try:
+            with open('/proc/%s/io' % self.vm_pid, 'r') as f:
+                stats = f.read().split('\n')
+        except FileNotFoundError:
+            # On VM teardown return 0
+            self.last_io_read_bytes = 0
+            self.last_io_write_bytes = 0
+            return
+
         for l in stats:
             l = l.split(' ')
             if l[0] == 'read_bytes:':
@@ -281,7 +299,11 @@ class VM:
         maxnode = None
         maxmem = 0
         for node_id in range(len(usage)):
-            mem = float(usage[node_id])
+            try:
+                mem = float(usage[node_id])
+            except ValueError:
+                # Teardown
+                return
             self.mem_used_per_node[node_id] = mem
             self.machine.nodes[node_id].vm_mem_used += mem
             if maxnode is None or mem > maxmem:
@@ -291,6 +313,7 @@ class VM:
         self.primary_node.vm_mem_allocated += self.mem_allocated
 
     def refresh_stats(self):
+        self.get_node_memory()
         # sum of all vcpu stats
         self.vcpu_sum_pc_util = 0
         self.vcpu_sum_pc_steal = 0
@@ -365,7 +388,6 @@ class Node:
         self.vm_mem_allocated = 0
         self.vm_mem_used = 0
         self.vcpu_threads = {}
-        self.emulator_threads = {}
         self.clear_stats()
 
     def clear_stats(self):
@@ -430,10 +452,6 @@ class Machine:
                     self.cpuset_mount_point = m[1]
                     return
 
-    def clear_nodes(self):
-        for n in self.nodes.keys():
-            self.nodes[n].clear()
-
     def clear_stats(self):
         for n in self.nodes.keys():
             self.nodes[n].clear_stats()
@@ -485,20 +503,35 @@ class Machine:
                 node.hwthread_list.append(int(j))
             self.nodes[node_id] = node
 
+    def del_vm(self, pid):
+        v = self.all_vms[pid]
+        del v.primary_node.node_vms[pid]
+        del self.all_vms[pid]
+
+
     def list_vms(self):
         cmd = ["pgrep", "qemu"]
         try:
             pids = subprocess.check_output(
                     cmd, shell=False).strip().decode("utf-8").split('\n')
         except subprocess.CalledProcessError:
-            print("No VMs")
-            sys.exit(0)
-        self.clear_nodes()
+            l = list(self.all_vms.keys())
+            for v in l:
+                self.del_vm(v)
+            return
+        previous_vm_list = list(self.all_vms.keys())
         for pid in pids:
             pid = int(pid)
+            if pid in self.all_vms.keys():
+                previous_vm_list.remove(pid)
+                continue
             v = VM(self.args, pid, self)
             self.all_vms[pid] = v
             v.primary_node.node_vms[pid] = v
+
+        if len(previous_vm_list) != 0:
+            for pid in previous_vm_list:
+                self.del_vm(pid)
 
 
 class VmTop:
@@ -650,6 +683,7 @@ class VmTop:
                               node.vcpu_sum_pc_steal / node.nr_hwthreads,
                               node.emulators_sum_pc_util / node.nr_hwthreads,
                               node.emulators_sum_pc_steal / node.nr_hwthreads))
+            self.machine.list_vms()
 
     def run(self):
         pass

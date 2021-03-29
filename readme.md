@@ -5,7 +5,7 @@ The tools are in varied state of maintenance, feel free to reach out if you
 have questions or suggestions for improvements.
 
 
-## steal.py
+## vmtop.py
 
 Monitor load and steal for qemu VMs, various filtering capabilities.
 

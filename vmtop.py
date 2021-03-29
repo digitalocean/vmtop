@@ -340,7 +340,7 @@ class Machine:
             v.primary_node.node_vms[pid] = v
 
 
-class FixSteal:
+class VmTop:
     def __init__(self):
         self.parse_args()
         self.machine = Machine(self.args)
@@ -441,5 +441,5 @@ if os.geteuid() != 0:
     print("Need to run as root")
     sys.exit(1)
 
-s = FixSteal()
+s = VmTop()
 s.run()

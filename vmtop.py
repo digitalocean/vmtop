@@ -195,6 +195,21 @@ class VM:
                     "%0.02f MB/s" % self.rx_rate,
                     "%0.02f MB/s" % self.tx_rate)
 
+    def output_vm_csv(self, out_file, timestamp):
+        out_file.write("%s,%d,%s,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f," \
+                "%0.02f,%0.02f,%0.02f,%0.02f\n" % (
+                    timestamp, self.vm_pid, self.name,
+                    self.vcpu_sum_pc_util,
+                    self.vcpu_sum_pc_steal,
+                    self.emulators_sum_pc_util,
+                    self.emulators_sum_pc_steal,
+                    self.vhost_sum_pc_util,
+                    self.vhost_sum_pc_steal,
+                    self.mb_read,
+                    self.mb_write,
+                    self.rx_rate,
+                    self.tx_rate))
+
     def get_nic_info(self):
         cmd = ['virsh', 'domiflist', self.name]
         lines = subprocess.check_output(
@@ -336,8 +351,9 @@ class VM:
 
 
 class Node:
-    def __init__(self, _id):
+    def __init__(self, _id, args):
         self.id = _id
+        self.args = args
         self.hwthread_list = []
         self.clear()
 
@@ -365,10 +381,28 @@ class Node:
             vm.refresh_stats()
 
     def print_node_initial_count(self):
+        if self.args.csv is not None:
+            return
         print(" - %s VMs (%s vcpus, %0.02f GB mem allocated, "
               "%0.02f GB mem used) on node %s" % (
                 self.nr_vms, len(self.vcpu_threads),
                 self.vm_mem_allocated/1024, self.vm_mem_used/1024, self.id))
+
+    def open_csv_file(self):
+        fname = os.path.join(self.args.csv, 'node%d.csv' % self.id)
+        print("Writing node %s data in %s" % (self.id, fname))
+        self.node_csv = open(fname, 'w')
+        self.node_csv.write("timestamp,id,vcpu_util,vcpu_steal,emulators_util,"
+                "emulators_steal,vhost_util,vhost_steal\n")
+
+    def output_node_csv(self, timestamp):
+        self.node_csv.write("%s,%s,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f\n" % (
+            timestamp, self.id, self.vcpu_sum_pc_util / self.nr_hwthreads,
+            self.vcpu_sum_pc_steal / self.nr_hwthreads,
+            self.emulators_sum_pc_util / self.nr_hwthreads,
+            self.emulators_sum_pc_steal / self.nr_hwthreads,
+            self.vhost_sum_pc_util / self.nr_hwthreads,
+            self.vhost_sum_pc_steal / self.nr_hwthreads))
 
     @property
     def nr_vms(self):
@@ -444,7 +478,7 @@ class Machine:
                 cmd, shell=True).strip().decode("utf-8")
         for i in numa_info.split("\n"):
             node_id = int(i.split(' ')[1].replace('node', ''))
-            node = Node(node_id)
+            node = Node(node_id, self.args)
             hwthreads = i.split(':')[1].replace(' ', '')
             _i = mixrange(hwthreads)
             for j in _i:
@@ -473,6 +507,12 @@ class VmTop:
         self.machine = Machine(self.args)
         print("Collecting VM informations...")
         self.machine.get_info()
+        if self.args.csv is not None:
+            self.csv = True
+            self.open_csv_files()
+        else:
+            self.csv = False
+
         self.machine.list_vms()
         self.machine.print_initial_count()
         self.loop()
@@ -495,6 +535,8 @@ class VmTop:
                             help='Limit to pid (csv), implies --vm')
         parser.add_argument('--vcpu', action='store_true',
                             help='show vcpu stats (implies --vm)')
+        parser.add_argument('--csv', type=str,
+                            help='Output as CSV files in provided folder name')
         parser.add_argument('--emulators', action='store_true',
                             help='show emulators stats (implies --vm)')
         parser.add_argument('--vm', action='store_true',
@@ -540,13 +582,30 @@ class VmTop:
                 nodes.append(int(n))
             self.args.node = nodes
 
+    def open_csv_files(self):
+        try:
+            os.mkdir(self.args.csv)
+        except FileExistsError:
+            print("Error: folder %s already exists, aborting" % self.args.csv)
+            sys.exit(1)
+        fname = os.path.join(self.args.csv, "vms.csv")
+        print("Writing VM data in %s" % fname)
+        self.vms_csv = open(fname, 'w')
+        self.vms_csv.write("timestamp,pid,name,vcpu_util,vcpu_steal,emulators_util,"
+                "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx\n")
+        for n in self.machine.nodes.values():
+            n.open_csv_file()
+
     def loop(self):
         while True:
             try:
                 time.sleep(self.args.refresh)
             except KeyboardInterrupt:
                 return
-            print("\n%s" % datetime.datetime.today())
+            if self.csv is False:
+                print("\n%s" % datetime.datetime.today())
+            else:
+                timestamp = int(time.time())
             self.machine.clear_stats()
             self.machine.refresh_stats()
 
@@ -556,7 +615,7 @@ class VmTop:
                         continue
                 nr = 0
                 node = self.machine.nodes[node]
-                if self.args.vm:
+                if self.args.vm and self.csv is False:
                     print("Node %d:" % node.id)
                     if not self.args.vcpu:
                         print(self.args.vm_format.format(
@@ -575,16 +634,22 @@ class VmTop:
                             if self.args.limit is not None and \
                                     nr >= self.args.limit:
                                 break
-                            print(vm)
+                            if self.csv is True:
+                                vm.output_vm_csv(self.vms_csv, timestamp)
+                            else:
+                                print(vm)
                             nr += 1
-                print("  Node %d total: vcpu util: %0.02f%%, "
-                      "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
-                      "emulators steal: %0.02f%%" % (
-                          node.id,
-                          node.vcpu_sum_pc_util / node.nr_hwthreads,
-                          node.vcpu_sum_pc_steal / node.nr_hwthreads,
-                          node.emulators_sum_pc_util / node.nr_hwthreads,
-                          node.emulators_sum_pc_steal / node.nr_hwthreads))
+                if self.csv:
+                    node.output_node_csv(timestamp)
+                else:
+                    print("  Node %d total: vcpu util: %0.02f%%, "
+                          "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
+                          "emulators steal: %0.02f%%" % (
+                              node.id,
+                              node.vcpu_sum_pc_util / node.nr_hwthreads,
+                              node.vcpu_sum_pc_steal / node.nr_hwthreads,
+                              node.emulators_sum_pc_util / node.nr_hwthreads,
+                              node.emulators_sum_pc_steal / node.nr_hwthreads))
 
     def run(self):
         pass

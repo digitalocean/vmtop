@@ -12,6 +12,7 @@
 import subprocess
 import operator
 import datetime
+import threading
 import time
 import os
 import sys
@@ -128,7 +129,7 @@ class NIC:
             with open('/sys/devices/virtual/net/%s/statistics/rx_bytes' %
                       self.name, 'r') as f:
                 self.last_tx = int(f.read().strip())
-        except FileNotFoundError:
+        except:
             # VM Teardown
             self.last_rx = 0
             self.last_tx = 0
@@ -155,6 +156,9 @@ class VM:
         # We assume all the allocated memory is/will be allocated on
         # only one node
         self.primary_node = None
+        # primary node can be updated in the background, so we need
+        # the lock when accessing it
+        self.vm_primary_node_lock = threading.Lock()
         self.mem_used_per_node = {}
         self.total_vcpu_count = 0
         self.total_vcpu_count_per_node = {}
@@ -293,9 +297,13 @@ class VM:
 
     def get_node_memory(self):
         cmd = ["numastat", "-p", str(self.vm_pid)]
-        usage = subprocess.check_output(
-                cmd,
-                shell=False).decode("utf-8").split('\n')[-2].split()[1:-1]
+        try:
+            usage = subprocess.check_output(
+                    cmd,
+                    shell=False).decode("utf-8").split('\n')[-2].split()[1:-1]
+        except subprocess.CalledProcessError:
+            # ctrl-c
+            return
         maxnode = None
         maxmem = 0
         for node_id in range(len(usage)):
@@ -309,8 +317,12 @@ class VM:
             if maxnode is None or mem > maxmem:
                 maxnode = node_id
                 maxmem = mem
-        self.primary_node = self.machine.nodes[maxnode]
-        self.primary_node.vm_mem_allocated += self.mem_allocated
+        try:
+            self.vm_primary_node_lock.acquire()
+            self.primary_node = self.machine.nodes[maxnode]
+            self.primary_node.vm_mem_allocated += self.mem_allocated
+        finally:
+            self.vm_primary_node_lock.release()
 
     def refresh_stats(self):
         # FIXME: this is too heavy to run at each loop, but we would need
@@ -367,12 +379,16 @@ class VM:
             self.rx_rate += n.rx_rate
 
         # copy to node stats
-        self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
-        self.primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
-        self.primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
-        self.primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
-        self.primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
-        self.primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
+        try:
+            self.vm_primary_node_lock.acquire()
+            self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
+            self.primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
+            self.primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
+            self.primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
+            self.primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
+            self.primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
+        finally:
+            self.vm_primary_node_lock.release()
 
 
 class Node:
@@ -403,6 +419,10 @@ class Node:
     def refresh_stats(self):
         for vm in self.node_vms.values():
             vm.refresh_stats()
+
+    def refresh_vm_allocation(self):
+        for vm in self.node_vms.values():
+            vm.get_node_memory()
 
     def print_node_initial_count(self):
         if self.args.csv is not None:
@@ -443,6 +463,7 @@ class Machine:
         self.nodes = {}
         self.all_vms = {}
         self.get_cpuset_mount_point()
+        self.cancel = False
 
     def get_cpuset_mount_point(self):
         with open('/proc/mounts', 'r') as f:
@@ -463,6 +484,17 @@ class Machine:
         for node in self.nodes.values():
             node.clear_stats()
             node.refresh_stats()
+
+    def refresh_vm_allocation(self):
+        while True:
+            for i in range(10):
+                if self.cancel is True:
+                    return
+                time.sleep(0.1)
+            for node in self.nodes.values():
+                if self.cancel is True:
+                    return
+                node.refresh_vm_allocation()
 
     def print_initial_count(self):
         for node in self.nodes.values():
@@ -521,6 +553,8 @@ class Machine:
             for v in l:
                 self.del_vm(v)
             return
+        except KeyboardInterrupt:
+            return
         previous_vm_list = list(self.all_vms.keys())
         for pid in pids:
             pid = int(pid)
@@ -542,6 +576,7 @@ class VmTop:
         self.machine = Machine(self.args)
         print("Collecting VM informations...")
         self.machine.get_info()
+        self.numastat_thread = None
         if self.args.csv is not None:
             self.csv = True
             self.open_csv_files()
@@ -632,10 +667,15 @@ class VmTop:
             n.open_csv_file()
 
     def loop(self):
+        self.numastat_thread = threading.Thread(target=self.machine.refresh_vm_allocation)
+        self.numastat_thread.start()
         while True:
             try:
                 time.sleep(self.args.refresh)
             except KeyboardInterrupt:
+                if self.numastat_thread is not None:
+                    self.machine.cancel = True
+                    self.numastat_thread.join()
                 return
             if self.csv is False:
                 print("\n%s" % datetime.datetime.today())

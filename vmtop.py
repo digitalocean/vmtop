@@ -15,6 +15,7 @@ import time
 import os
 import sys
 import argparse
+import shutil
 from datetime import datetime
 
 
@@ -723,6 +724,14 @@ class VmTop:
         else:
             print("NOT writing per-VM data")
 
+    def check_diskspace(self):
+        # Be nice and abort if disk left is less than 1GB
+        if self.args.csv is not None:
+            if shutil.disk_usage(self.args.csv)[2] < 1*1024*1024*1024:
+                print("Less than 1GB available on disk, exiting")
+                self.machine.cancel = True
+                sys.exit(1)
+
     def loop(self):
         while True:
             try:
@@ -732,6 +741,7 @@ class VmTop:
                     self.machine.cancel = True
                     self.vm_alloc_thread.join()
                 return
+            self.check_diskspace()
             if not self.vm_alloc_thread.is_alive():
                 print("Background allocation thread crashed, exiting")
                 sys.exit(1)

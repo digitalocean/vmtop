@@ -9,9 +9,9 @@
 
 import subprocess
 import operator
-import datetime
 import threading
 import time
+import signal
 import os
 import sys
 import argparse
@@ -623,6 +623,7 @@ class VmTop:
     def __init__(self):
         self.parse_args()
         self.machine = Machine(self.args)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
         print("Collecting VM informations...")
         self.machine.get_info()
         self.vm_alloc_thread = None
@@ -645,6 +646,9 @@ class VmTop:
 
         # Main loop
         self.loop()
+
+    def exit_gracefully(self, signum, frame):
+        self.machine.cancel = True
 
     def parse_args(self):
         parser = argparse.ArgumentParser(description='Monitor local steal')
@@ -733,7 +737,7 @@ class VmTop:
                 sys.exit(1)
 
     def loop(self):
-        while True:
+        while not self.machine.cancel:
             try:
                 time.sleep(self.args.refresh)
             except KeyboardInterrupt:
@@ -743,10 +747,10 @@ class VmTop:
                 return
             self.check_diskspace()
             if not self.vm_alloc_thread.is_alive():
-                print("Background allocation thread crashed, exiting")
+                print("Background allocation thread died, exiting")
                 sys.exit(1)
             if self.csv is False:
-                print("\n%s" % datetime.datetime.today())
+                print("\n%s" % datetime.today())
             else:
                 timestamp = int(time.time())
             self.machine.refresh_stats()
@@ -802,7 +806,6 @@ class VmTop:
 
     def run(self):
         pass
-
 
 if os.geteuid() != 0:
     print("Need to run as root")

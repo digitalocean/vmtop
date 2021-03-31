@@ -71,7 +71,7 @@ class QemuThread:
             if 'kvm-pit' in self.thread_name:
                 return
             print("Warning: VCPU %d from VM %d belongs to multiple nodes, "
-                  "node utilization may be inaccurate" % (self.thread_pid,
+                  "node accounting may be inaccurate" % (self.thread_pid,
                       self.vm_pid))
 
     def get_schedstats(self):
@@ -153,12 +153,15 @@ class VM:
         self.machine = machine
         self.name = None
         self.mem_allocated = 0
-        # We assume all the allocated memory is/will be allocated on
-        # only one node
+
+        # We assume all the allocated memory was allocated to fit on
+        # only one node, we still track the real usage on each node.
+        # changes protected by machine.nodes_lock.
         self.primary_node = None
-        # primary node can be updated in the background, so we need
-        # the lock when accessing it
-        self.vm_primary_node_lock = threading.Lock()
+        # If a VM changed node, store it here and update with
+        # machine.nodes_lock is held by the vm allocation thread
+        self.new_primary_node = None
+
         self.mem_used_per_node = {}
         self.total_vcpu_count = 0
         self.total_vcpu_count_per_node = {}
@@ -213,19 +216,22 @@ class VM:
                     "%0.02f MB/s" % self.tx_rate)
 
     def output_vm_csv(self, out_file, timestamp):
+        # Output the CSV file
+        # we use abs() because Python manages to write -0.00 once in a
+        # while...
         out_file.write("%s,%d,%s,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f," \
                 "%0.02f,%0.02f,%0.02f,%0.02f\n" % (
                     timestamp, self.vm_pid, self.name,
-                    self.vcpu_sum_pc_util,
-                    self.vcpu_sum_pc_steal,
-                    self.emulators_sum_pc_util,
-                    self.emulators_sum_pc_steal,
-                    self.vhost_sum_pc_util,
-                    self.vhost_sum_pc_steal,
-                    self.mb_read,
-                    self.mb_write,
-                    self.rx_rate,
-                    self.tx_rate))
+                    abs(self.vcpu_sum_pc_util),
+                    abs(self.vcpu_sum_pc_steal),
+                    abs(self.emulators_sum_pc_util),
+                    abs(self.emulators_sum_pc_steal),
+                    abs(self.vhost_sum_pc_util),
+                    abs(self.vhost_sum_pc_steal),
+                    abs(self.mb_read),
+                    abs(self.mb_write),
+                    abs(self.rx_rate),
+                    abs(self.tx_rate)))
 
     def get_nic_info(self):
         cmd = ['virsh', 'domiflist', self.name]
@@ -252,8 +258,6 @@ class VM:
                 continue
             if 'CPU' in comm:
                 self.vcpu_threads[tid] = thread
-                for n in thread.nodes:
-                    n.vcpu_threads[tid] = thread
             else:
                 self.emulator_threads[tid] = thread
 
@@ -317,12 +321,12 @@ class VM:
             if maxnode is None or mem > maxmem:
                 maxnode = node_id
                 maxmem = mem
-        try:
-            self.vm_primary_node_lock.acquire()
+
+        if self.primary_node is None:
             self.primary_node = self.machine.nodes[maxnode]
-            self.primary_node.vm_mem_allocated += self.mem_allocated
-        finally:
-            self.vm_primary_node_lock.release()
+        elif self.primary_node != self.machine.nodes[maxnode]:
+            self.new_primary_node = self.machine.nodes[maxnode]
+        self.primary_node.vm_mem_allocated += self.mem_allocated
 
     def refresh_stats(self):
         # FIXME: this is too heavy to run at each loop, but we would need
@@ -379,16 +383,12 @@ class VM:
             self.rx_rate += n.rx_rate
 
         # copy to node stats
-        try:
-            self.vm_primary_node_lock.acquire()
-            self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
-            self.primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
-            self.primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
-            self.primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
-            self.primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
-            self.primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
-        finally:
-            self.vm_primary_node_lock.release()
+        self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
+        self.primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
+        self.primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
+        self.primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
+        self.primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
+        self.primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
 
 
 class Node:
@@ -396,19 +396,21 @@ class Node:
         self.id = _id
         self.args = args
         self.hwthread_list = []
-        self.clear()
-
-    def clear(self):
         # Approximation, VMs could be split between nodes, we use the node
         # where most of the memory is allocated to decide here
         self.node_vms = {}
+
+        # After the initial scan, the resource accounting is owned by the
+        # refresh_vm_allocation thread
         # Approximation, assumes all the allocated memory is not split
         self.vm_mem_allocated = 0
         self.vm_mem_used = 0
-        self.vcpu_threads = {}
+        self.node_vcpu_threads = 0
+
         self.clear_stats()
 
     def clear_stats(self):
+        # Owned by the main loop
         self.vcpu_sum_pc_util = 0
         self.vcpu_sum_pc_steal = 0
         self.vhost_sum_pc_util = 0
@@ -416,21 +418,20 @@ class Node:
         self.emulators_sum_pc_util = 0
         self.emulators_sum_pc_steal = 0
 
-    def refresh_stats(self):
-        for vm in self.node_vms.values():
-            vm.refresh_stats()
-
     def refresh_vm_allocation(self):
+        self.vm_mem_allocated = 0
+        self.vm_mem_used = 0
+        self.node_vcpu_threads = 0
         for vm in self.node_vms.values():
             vm.get_node_memory()
 
     def print_node_initial_count(self):
         if self.args.csv is not None:
             return
-        print(" - %s VMs (%s vcpus, %0.02f GB mem allocated, "
-              "%0.02f GB mem used) on node %s" % (
-                self.nr_vms, len(self.vcpu_threads),
-                self.vm_mem_allocated/1024, self.vm_mem_used/1024, self.id))
+        return("%s VMs (%s vcpus, %0.02f GB mem allocated, "
+              "%0.02f GB mem used)" % (
+                self.nr_vms, self.node_vcpu_threads,
+                self.vm_mem_allocated/1024, self.vm_mem_used/1024))
 
     def open_csv_file(self):
         fname = os.path.join(self.args.csv, 'node%d.csv' % self.id)
@@ -460,6 +461,11 @@ class Node:
 class Machine:
     def __init__(self, args):
         self.args = args
+
+        # to read/update node_vms in each node, prevents concurrent
+        # accesses by the main loop and the vm_allocation thread
+        self.nodes_lock = threading.Lock()
+
         self.nodes = {}
         self.all_vms = {}
         self.get_cpuset_mount_point()
@@ -475,30 +481,52 @@ class Machine:
                     self.cpuset_mount_point = m[1]
                     return
 
-    def clear_stats(self):
-        for n in self.nodes.keys():
-            self.nodes[n].clear_stats()
-
     def refresh_stats(self):
-        # XXX: refresh vm list and pinning ?
         for node in self.nodes.values():
             node.clear_stats()
-            node.refresh_stats()
+        for vm in self.all_vms.values():
+            vm.refresh_stats()
+
+    def account_vcpus(self):
+        for vm in self.all_vms.values():
+            vm.primary_node.node_vcpu_threads += len(vm.vcpu_threads.keys())
 
     def refresh_vm_allocation(self):
         while True:
+            # Sleep 1s between scans
             for i in range(10):
                 if self.cancel is True:
                     return
                 time.sleep(0.1)
+            self.list_vms()
+            for vm in self.all_vms.values():
+                # If a VM switched node
+                if vm.new_primary_node is not None:
+                    try:
+                        self.nodes_lock.acquire()
+                        del vm.primary_node.node_vms[vm.vm_pid]
+                        vm.primary_node.vm_mem_allocated -= vm.mem_allocated
+
+                        vm.new_primary_node.node_vms[vm.vm_pid] = vm
+                        vm.new_primary_node.vm_mem_allocated += vm.mem_allocated
+                        vm.primary_node = vm.new_primary_node
+                        vm.new_primary_node = None
+                    finally:
+                        self.nodes_lock.release()
             for node in self.nodes.values():
+                node.node_vcpu_threads = 0
                 if self.cancel is True:
                     return
                 node.refresh_vm_allocation()
+            self.account_vcpus()
 
     def print_initial_count(self):
         for node in self.nodes.values():
-            node.print_node_initial_count()
+            self.print_node_count(node.id)
+
+    def print_node_count(self, node_id):
+        node = self.nodes[node_id]
+        print("  Node %d: %s" % (node.id, node.print_node_initial_count()))
 
     def get_nodes(self, cpuset):
         nodes = []
@@ -555,15 +583,18 @@ class Machine:
             return
         except KeyboardInterrupt:
             return
+        # to track the VMs that have disappeared since the last scan
         previous_vm_list = list(self.all_vms.keys())
         for pid in pids:
+            if self.cancel is True:
+                return
             pid = int(pid)
             if pid in self.all_vms.keys():
                 previous_vm_list.remove(pid)
                 continue
             v = VM(self.args, pid, self)
-            self.all_vms[pid] = v
             v.primary_node.node_vms[pid] = v
+            self.all_vms[pid] = v
 
         if len(previous_vm_list) != 0:
             for pid in previous_vm_list:
@@ -576,15 +607,24 @@ class VmTop:
         self.machine = Machine(self.args)
         print("Collecting VM informations...")
         self.machine.get_info()
-        self.numastat_thread = None
+        self.vm_alloc_thread = None
         if self.args.csv is not None:
             self.csv = True
             self.open_csv_files()
         else:
             self.csv = False
 
+        # Initial list and allocation accounting
         self.machine.list_vms()
+        self.machine.account_vcpus()
         self.machine.print_initial_count()
+
+        # Scan for new VMs and memory/vcpu allocation in the background
+        self.vm_alloc_thread = threading.Thread(
+                target=self.machine.refresh_vm_allocation)
+        self.vm_alloc_thread.start()
+
+        # Main loop
         self.loop()
 
     def parse_args(self):
@@ -667,65 +707,71 @@ class VmTop:
             n.open_csv_file()
 
     def loop(self):
-        self.numastat_thread = threading.Thread(target=self.machine.refresh_vm_allocation)
-        self.numastat_thread.start()
         while True:
             try:
                 time.sleep(self.args.refresh)
             except KeyboardInterrupt:
-                if self.numastat_thread is not None:
+                if self.vm_alloc_thread is not None:
                     self.machine.cancel = True
-                    self.numastat_thread.join()
+                    self.vm_alloc_thread.join()
                 return
+            if not self.vm_alloc_thread.is_alive():
+                print("Background allocation thread crashed, exiting")
+                sys.exit(1)
             if self.csv is False:
                 print("\n%s" % datetime.datetime.today())
             else:
                 timestamp = int(time.time())
-            self.machine.clear_stats()
             self.machine.refresh_stats()
 
-            for node in self.machine.nodes.keys():
-                if self.args.node is not None:
-                    if node not in self.args.node:
-                        continue
-                nr = 0
-                node = self.machine.nodes[node]
-                if self.args.vm and self.csv is False:
-                    print("Node %d:" % node.id)
-                    if not self.args.vcpu:
-                        print(self.args.vm_format.format(
-                            "Name", "PID", "vcpu util", "vcpu steal",
-                            "vhost util", "vhost steal", "emu util",
-                            "emu steal", "disk read", "disk write",
-                            "rx", "tx"))
-                for vm in (sorted(node.node_vms.values(),
-                                  key=operator.attrgetter(self.args.sort),
-                                  reverse=True)):
-                    if self.args.vm:
-                        if self.args.pid is not None:
-                            if vm.vm_pid in self.args.pids:
-                                print(vm)
-                        else:
-                            if self.args.limit is not None and \
-                                    nr >= self.args.limit:
-                                break
-                            if self.csv is True:
-                                vm.output_vm_csv(self.vms_csv, timestamp)
+            try:
+                # Prevent the list of VMs per node to be updated during
+                # the output
+                self.machine.nodes_lock.acquire()
+                for node in self.machine.nodes.keys():
+                    if self.args.node is not None:
+                        if node not in self.args.node:
+                            continue
+                    nr = 0
+                    node = self.machine.nodes[node]
+                    if self.args.vm and self.csv is False:
+                        print("Node %d:" % node.id)
+                        if not self.args.vcpu:
+                            print(self.args.vm_format.format(
+                                "Name", "PID", "vcpu util", "vcpu steal",
+                                "vhost util", "vhost steal", "emu util",
+                                "emu steal", "disk read", "disk write",
+                                "rx", "tx"))
+                    for vm in (sorted(node.node_vms.values(),
+                                      key=operator.attrgetter(self.args.sort),
+                                      reverse=True)):
+                        if self.args.vm:
+                            if self.args.pid is not None:
+                                if vm.vm_pid in self.args.pids:
+                                    print(vm)
                             else:
-                                print(vm)
-                            nr += 1
-                if self.csv:
-                    node.output_node_csv(timestamp)
-                else:
-                    print("  Node %d total: vcpu util: %0.02f%%, "
-                          "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
-                          "emulators steal: %0.02f%%" % (
-                              node.id,
-                              node.vcpu_sum_pc_util / node.nr_hwthreads,
-                              node.vcpu_sum_pc_steal / node.nr_hwthreads,
-                              node.emulators_sum_pc_util / node.nr_hwthreads,
-                              node.emulators_sum_pc_steal / node.nr_hwthreads))
-            self.machine.list_vms()
+                                if self.args.limit is not None and \
+                                        nr >= self.args.limit:
+                                    break
+                                if self.csv is True:
+                                    vm.output_vm_csv(self.vms_csv, timestamp)
+                                else:
+                                    print(vm)
+                                nr += 1
+                    if self.csv:
+                        node.output_node_csv(timestamp)
+                    else:
+                        print("  Node %d: vcpu util: %0.02f%%, "
+                              "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
+                              "emulators steal: %0.02f%%" % (
+                                  node.id,
+                                  node.vcpu_sum_pc_util / node.nr_hwthreads,
+                                  node.vcpu_sum_pc_steal / node.nr_hwthreads,
+                                  node.emulators_sum_pc_util / node.nr_hwthreads,
+                                  node.emulators_sum_pc_steal / node.nr_hwthreads))
+                        self.machine.print_node_count(node.id)
+            finally:
+                self.machine.nodes_lock.release()
 
     def run(self):
         pass

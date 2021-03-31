@@ -1,8 +1,6 @@
 #!/usr/bin/python3
 
 # TODO:
-#  - resources accounting at each loop
-#  - CSV output of allocation and usage
 #  - system-wide metrics
 #  - arbitrary groups of processes metrics (kernel threads,
 #    middleware, etc)
@@ -17,6 +15,7 @@ import time
 import os
 import sys
 import argparse
+from datetime import datetime
 
 
 def mixrange(s):
@@ -152,6 +151,7 @@ class VM:
         self.vm_pid = vm_pid
         self.machine = machine
         self.name = None
+        self.csv = None
         self.mem_allocated = 0
 
         # We assume all the allocated memory was allocated to fit on
@@ -176,6 +176,8 @@ class VM:
         self.last_io_write_bytes = None
 
         self.get_vm_info()
+        if self.args.csv is not None and self.args.vm is True:
+            self.open_vm_csv()
         self.get_threads()
         self.get_node_memory()
         self.get_nic_info()
@@ -215,23 +217,29 @@ class VM:
                     "%0.02f MB/s" % self.rx_rate,
                     "%0.02f MB/s" % self.tx_rate)
 
-    def output_vm_csv(self, out_file, timestamp):
+    def open_vm_csv(self):
+        fname = os.path.join(self.args.csv, "%s.csv" % self.name)
+        self.csv = open(fname, 'w')
+        self.csv.write("timestamp,pid,name,node,vcpu_util,vcpu_steal,emulators_util,"
+                "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx\n")
+
+    def output_vm_csv(self, timestamp):
         # Output the CSV file
         # we use abs() because Python manages to write -0.00 once in a
         # while...
-        out_file.write("%s,%d,%s,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f," \
-                "%0.02f,%0.02f,%0.02f,%0.02f\n" % (
-                    timestamp, self.vm_pid, self.name,
-                    abs(self.vcpu_sum_pc_util),
-                    abs(self.vcpu_sum_pc_steal),
-                    abs(self.emulators_sum_pc_util),
-                    abs(self.emulators_sum_pc_steal),
-                    abs(self.vhost_sum_pc_util),
-                    abs(self.vhost_sum_pc_steal),
-                    abs(self.mb_read),
-                    abs(self.mb_write),
-                    abs(self.rx_rate),
-                    abs(self.tx_rate)))
+        self.csv.write(f"{datetime.fromtimestamp(timestamp)},"
+                       f"{self.vm_pid},{self.name},"
+                       f"{self.primary_node.id},"
+                       f"{'%0.02f' % (abs(self.vcpu_sum_pc_util))},"
+                       f"{'%0.02f' % (abs(self.vcpu_sum_pc_steal))},"
+                       f"{'%0.02f' % (abs(self.emulators_sum_pc_util))},"
+                       f"{'%0.02f' % (abs(self.emulators_sum_pc_steal))},"
+                       f"{'%0.02f' % (abs(self.vhost_sum_pc_util))},"
+                       f"{'%0.02f' % (abs(self.vhost_sum_pc_steal))},"
+                       f"{'%0.02f' % (abs(self.mb_read))},"
+                       f"{'%0.02f' % (abs(self.mb_write))},"
+                       f"{'%0.02f' % (abs(self.rx_rate))},"
+                       f"{'%0.02f' % (abs(self.tx_rate))}\n")
 
     def get_nic_info(self):
         cmd = ['virsh', 'domiflist', self.name]
@@ -437,17 +445,26 @@ class Node:
         fname = os.path.join(self.args.csv, 'node%d.csv' % self.id)
         print("Writing node %s data in %s" % (self.id, fname))
         self.node_csv = open(fname, 'w')
-        self.node_csv.write("timestamp,id,vcpu_util,vcpu_steal,emulators_util,"
-                "emulators_steal,vhost_util,vhost_steal\n")
+        self.node_csv.write("timestamp,id,nr_vms,nr_vcpus,vm_mem_allocated,"
+                            "vm_mem_used,vcpu_util,vcpu_steal,emulators_util,"
+                            "emulators_steal,vhost_util,vhost_steal\n")
 
     def output_node_csv(self, timestamp):
-        self.node_csv.write("%s,%s,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f,%0.02f\n" % (
-            timestamp, self.id, self.vcpu_sum_pc_util / self.nr_hwthreads,
-            self.vcpu_sum_pc_steal / self.nr_hwthreads,
-            self.emulators_sum_pc_util / self.nr_hwthreads,
-            self.emulators_sum_pc_steal / self.nr_hwthreads,
-            self.vhost_sum_pc_util / self.nr_hwthreads,
-            self.vhost_sum_pc_steal / self.nr_hwthreads))
+        self.node_csv.write(f"{datetime.fromtimestamp(timestamp)},"
+                            f"{self.id},"
+                            f"{self.nr_vms},"
+                            f"{self.node_vcpu_threads},"
+                            f"{self.vm_mem_allocated/1024},"
+                            f"{self.vm_mem_used/1024},"
+                            f"{'%0.02f' % (self.vcpu_sum_pc_util / self.nr_hwthreads)},"
+                            f"{'%0.02f' % (self.vcpu_sum_pc_steal / self.nr_hwthreads)},"
+                            f"{'%0.02f' % (self.emulators_sum_pc_util / self.nr_hwthreads)},"
+                            f"{'%0.02f' % (self.emulators_sum_pc_steal / self.nr_hwthreads)},"
+                            f"{'%0.02f' % (self.vhost_sum_pc_util / self.nr_hwthreads)},"
+                            f"{'%0.02f' % (self.vhost_sum_pc_steal / self.nr_hwthreads)}\n")
+
+    def output_allocation(self):
+        print("  Node %d: %s" % (self.id, self.print_node_initial_count()))
 
     @property
     def nr_vms(self):
@@ -526,7 +543,7 @@ class Machine:
 
     def print_node_count(self, node_id):
         node = self.nodes[node_id]
-        print("  Node %d: %s" % (node.id, node.print_node_initial_count()))
+        node.output_allocation()
 
     def get_nodes(self, cpuset):
         nodes = []
@@ -617,7 +634,8 @@ class VmTop:
         # Initial list and allocation accounting
         self.machine.list_vms()
         self.machine.account_vcpus()
-        self.machine.print_initial_count()
+        if self.csv is False:
+            self.machine.print_initial_count()
 
         # Scan for new VMs and memory/vcpu allocation in the background
         self.vm_alloc_thread = threading.Thread(
@@ -698,13 +716,12 @@ class VmTop:
         except FileExistsError:
             print("Error: folder %s already exists, aborting" % self.args.csv)
             sys.exit(1)
-        fname = os.path.join(self.args.csv, "vms.csv")
-        print("Writing VM data in %s" % fname)
-        self.vms_csv = open(fname, 'w')
-        self.vms_csv.write("timestamp,pid,name,vcpu_util,vcpu_steal,emulators_util,"
-                "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx\n")
         for n in self.machine.nodes.values():
             n.open_csv_file()
+        if self.args.vm is True:
+            print("Writing per-VM csv file")
+        else:
+            print("NOT writing per-VM data")
 
     def loop(self):
         while True:
@@ -754,7 +771,7 @@ class VmTop:
                                         nr >= self.args.limit:
                                     break
                                 if self.csv is True:
-                                    vm.output_vm_csv(self.vms_csv, timestamp)
+                                    vm.output_vm_csv(timestamp)
                                 else:
                                     print(vm)
                                 nr += 1

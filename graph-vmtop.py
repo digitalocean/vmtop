@@ -58,6 +58,8 @@ for m in metrics:
     plt.gcf().autofmt_xdate()
     plt.legend()
 
-    fig.savefig(os.path.join(args.path, "%s.png" % m))
+    out_file = os.path.join(args.path, "%s.png" % m)
+    fig.savefig(out_file)
     plt.close()
+    print("Generated %s" % out_file)
 

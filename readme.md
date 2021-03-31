@@ -8,6 +8,8 @@ have questions or suggestions for improvements.
 ## vmtop.py
 
 Monitor load and steal for qemu VMs, various filtering capabilities.
+It can output as CSV and the `graph-vmtop.py` can generate graphs from those
+CSV files.
 
 
 ## guesttime.bt

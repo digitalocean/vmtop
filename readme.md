@@ -51,9 +51,6 @@ its memory is allocated, if a VM can float between NUMA nodes, the node-level
 information may not be accurate (and a warning will be shown). The VM-level
 data is accurate regardless of the pinning.
 
-Only the network information depends on libvirt if the VMs are not managed by
-libvirt, you can pass `--no-nic`.
-
 ## guesttime.bt
 
 `bpftrace` tool to check statistically how long a vCPU spends inside the guest

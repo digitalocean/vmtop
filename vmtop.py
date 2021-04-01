@@ -245,16 +245,25 @@ class VM:
                        f"{'%0.02f' % (abs(self.tx_rate))}\n")
 
     def get_nic_info(self):
-        cmd = ['virsh', 'domiflist', self.name]
-        lines = subprocess.check_output(
-                cmd, shell=False).strip().decode("utf-8").split('\n')
-        for l in lines:
-            fields = l.split()
-            if len(fields) == 1:
+        for fd in os.listdir(f'/proc/{self.vm_pid}/fd/'):
+            lname = f'/proc/{self.vm_pid}/fd/{fd}'
+            try:
+                link = os.readlink(lname)
+            except OSError:
                 continue
-            if fields[0] == 'Interface':
-                continue
-            self.nics[fields[0]] = NIC(self, fields[0])
+
+            if link == '/dev/net/tun':
+                try:
+                    with open(f'/proc/{self.vm_pid}/fdinfo/{fd}', 'r') as _f:
+                        fdinfo = _f.read().split('\n')
+                except FileNotFoundError:
+                    # Ignore fd that vanished
+                    continue
+
+                for l in fdinfo:
+                    l = l.split()
+                    if len(l) ==2 and l[0] == 'iff:':
+                        self.nics[l[1]] = NIC(self, l[1])
 
     def get_threads(self):
         for tid in os.listdir('/proc/%s/task/' % self.vm_pid):
@@ -723,7 +732,7 @@ class VmTop:
         parser.add_argument('--vcpu', action='store_true',
                             help='show vcpu stats (implies --vm)')
         parser.add_argument('--no-nic', action='store_true',
-                            help='Don\'t collect NIC info (depends on libvirt, can be really slow)')
+                            help='Don\'t collect NIC info')
         parser.add_argument('--csv', type=str,
                             help='Output as CSV files in provided folder name')
         parser.add_argument('--emulators', action='store_true',

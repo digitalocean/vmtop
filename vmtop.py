@@ -328,7 +328,6 @@ class VM:
                 # Teardown
                 return
             self.mem_used_per_node[node_id] = mem
-            self.machine.nodes[node_id].vm_mem_used += mem
             if maxnode is None or mem > maxmem:
                 maxnode = node_id
                 maxmem = mem
@@ -337,7 +336,6 @@ class VM:
             self.primary_node = self.machine.nodes[maxnode]
         elif self.primary_node != self.machine.nodes[maxnode]:
             self.new_primary_node = self.machine.nodes[maxnode]
-        self.primary_node.vm_mem_allocated += self.mem_allocated
 
     def clear_stats(self):
         self.vcpu_sum_pc_util = 0
@@ -431,10 +429,14 @@ class Node:
         self.emulators_sum_pc_steal = 0
 
     def refresh_vm_allocation(self):
-        self.vm_mem_allocated = 0
-        self.vm_mem_used = 0
+        tmp_vm_mem_allocated = 0
+        tmp_vm_mem_used = 0
         for vm in self.node_vms.values():
             vm.get_node_memory()
+            tmp_vm_mem_allocated += vm.mem_allocated
+            tmp_vm_mem_used += vm.mem_used_per_node[self.id]
+        self.vm_mem_allocated = tmp_vm_mem_allocated
+        self.vm_mem_used = tmp_vm_mem_used
 
     def print_node_initial_count(self):
         if self.args.csv is not None:
@@ -606,8 +608,13 @@ class Machine:
         finally:
             self.all_vms_lock.release()
 
+    def refresh_mem_allocation(self):
+        for node in self.nodes.values():
+            if self.cancel is True:
+                return
+            node.refresh_vm_allocation()
 
-    def list_vms(self):
+    def list_vms(self, progress=False):
         cmd = ["pgrep", "qemu"]
         try:
             pids = subprocess.check_output(
@@ -621,20 +628,34 @@ class Machine:
             return
         # to track the VMs that have disappeared since the last scan
         previous_vm_list = list(self.all_vms.keys())
+        nr = 0
         for pid in pids:
             if self.cancel is True:
                 return
+            nr += 1
+            if progress is True:
+                print("%d VMs" % nr, end='\r')
             pid = int(pid)
             if pid in self.all_vms.keys():
                 previous_vm_list.remove(pid)
                 continue
-            v = VM(self.args, pid, self)
+            try:
+                v = VM(self.args, pid, self)
+            except KeyboardInterrupt:
+                return
+            except:
+                print("Unexpected error on VM creation:", sys.exc_info())
+                continue
             v.primary_node.node_vms[pid] = v
             try:
                 self.all_vms_lock.acquire()
                 self.all_vms[pid] = v
             finally:
                 self.all_vms_lock.release()
+
+        if progress is True:
+            print("%d VMs" % nr)
+            print("Done")
 
         if len(previous_vm_list) != 0:
             for pid in previous_vm_list:
@@ -656,7 +677,8 @@ class VmTop:
             self.csv = False
 
         # Initial list and allocation accounting
-        self.machine.list_vms()
+        self.machine.list_vms(progress=True)
+        self.machine.refresh_mem_allocation()
         self.machine.account_vcpus()
         if self.csv is False:
             self.machine.print_initial_count()

@@ -287,10 +287,16 @@ class VM:
         for i in range(len(cmdline)):
             if cmdline[i].startswith('guest='):
                 self.name = cmdline[i].split('=')[1].split(',')[0]
-            if cmdline[i] == '-m':
+            elif cmdline[i].startswith('-name'):
+                self.name = cmdline[i+1]
+            elif cmdline[i] == '-m':
                 self.mem_allocated = int(cmdline[i+1])
-            if cmdline[i] == '-smp':
+            elif cmdline[i] == '-smp':
                 self.total_vcpu_count = int(cmdline[i+1].split(',')[0])
+
+        if self.name is None:
+            print("Failed to parse guest name")
+            self.name = "unknown"
 
     def refresh_io_stats(self):
         self.last_io_scrape_ts = time.time()

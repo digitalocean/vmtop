@@ -46,6 +46,11 @@ Guest20  6945    36.15 %     0.24 %      6.42 %      0.45 %      0.77 %    0.04 
   Node 1: 131 VMs (161 vcpus, 210.00 GB mem allocated, 193.42 GB mem used)
 ```
 
+Assumption: the node-level information assumes a VM mostly runs where most of
+its memory is allocated, if a VM can float between NUMA nodes, the node-level
+information may not be accurate (and a warning will be shown). The VM-level
+data is accurate regardless of the pinning.
+
 ## guesttime.bt
 
 `bpftrace` tool to check statistically how long a vCPU spends inside the guest

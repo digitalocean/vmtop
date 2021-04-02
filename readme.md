@@ -9,7 +9,7 @@ have questions or suggestions for improvements.
 
 Monitor load and steal for qemu VMs, various filtering capabilities.
 It can output as CSV and the `graph-vmtop.py` can generate graphs from those
-CSV files (record with `--csv <dir>`).
+CSV files (record with `--csv <dir>`). Depends on `numastat` being in the `$PATH`.
 
 Example output for the top 10 VMs experiencing the most vcpu steal per node:
 

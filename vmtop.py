@@ -511,6 +511,69 @@ class Machine:
         self.get_cpuset_mount_point()
         self.cancel = False
 
+        self.get_machine_stat()
+
+    def refresh_machine_stats(self):
+        nr_hwthreads = self.nr_hwthreads
+        prev_user = self.last_cpu_user
+        prev_nice = self.last_cpu_nice
+        prev_system = self.last_cpu_system
+        prev_idle = self.last_cpu_idle
+        prev_iowait = self.last_cpu_iowait
+        prev_irq = self.last_cpu_irq
+        prev_softirq = self.last_cpu_softirq
+        prev_guest = self.last_cpu_guest
+        prev_ts = self.last_scrape_ts
+        self.get_machine_stat()
+        diff = (self.last_scrape_ts - prev_ts) * nr_hwthreads
+        self.pc_user = (self.last_cpu_user - prev_user) / diff
+        self.pc_nice = (self.last_cpu_nice - prev_nice) / diff
+        self.pc_system = (self.last_cpu_system - prev_system) / diff
+        self.pc_idle = (self.last_cpu_idle - prev_idle) / diff
+        self.pc_iowait = (self.last_cpu_iowait - prev_iowait) / diff
+        self.pc_irq = (self.last_cpu_irq - prev_irq) / diff
+        self.pc_softirq = (self.last_cpu_softirq - prev_softirq) / diff
+        self.pc_guest = (self.last_cpu_guest - prev_guest) / diff
+
+    def __repr__(self):
+        return (f"Host CPU: user: {'%0.02f%%' % self.pc_user}, "
+              f"nice: {'%0.02f%%' % self.pc_nice}, "
+              f"system: {'%0.02f%%' % self.pc_system}, "
+              f"idle: {'%0.02f%%' % self.pc_idle}, "
+              f"iowait: {'%0.02f%%' % self.pc_iowait}, "
+              f"irq: {'%0.02f%%' % self.pc_irq}, "
+              f"guest: {'%0.02f%%' % self.pc_guest}")
+
+    def open_csv_file(self):
+        fname = os.path.join(self.args.csv, 'host.csv')
+        print("Writing host data in %s" % (fname))
+        self.machine_csv = open(fname, 'w')
+        self.machine_csv.write("timestamp,cpu_user,cpu_nice,cpu_system,"
+                               "cpu_idle,cpu_iowait,cpu_irq,cpu_guest\n")
+
+    def output_machine_csv(self, timestamp):
+        self.machine_csv.write(f"{datetime.fromtimestamp(timestamp)},"
+                            f"{'%0.02f' % self.pc_user},"
+                            f"{'%0.02f' % self.pc_nice},"
+                            f"{'%0.02f' % self.pc_system},"
+                            f"{'%0.02f' % self.pc_idle},"
+                            f"{'%0.02f' % self.pc_iowait},"
+                            f"{'%0.02f' % self.pc_irq},"
+                            f"{'%0.02f' % self.pc_guest}\n")
+
+    def get_machine_stat(self):
+        self.last_scrape_ts = time.time()
+        with open('/proc/stat', 'r') as f:
+            cpu = f.readline().split()
+        self.last_cpu_user = int(cpu[1])
+        self.last_cpu_nice = int(cpu[2])
+        self.last_cpu_system = int(cpu[3])
+        self.last_cpu_idle = int(cpu[4])
+        self.last_cpu_iowait = int(cpu[5])
+        self.last_cpu_irq = int(cpu[6])
+        self.last_cpu_softirq = int(cpu[7])
+        self.last_cpu_guest = int(cpu[9])
+
     def get_cpuset_mount_point(self):
         with open('/proc/mounts', 'r') as f:
             mounts = f.read().split('\n')
@@ -530,7 +593,7 @@ class Machine:
                 vm.refresh_stats()
         finally:
             self.all_vms_lock.release()
-
+        self.refresh_machine_stats()
 
     def account_vcpus(self):
         tmp = {}
@@ -786,6 +849,7 @@ class VmTop:
         except FileExistsError:
             print("Error: folder %s already exists, aborting" % self.args.csv)
             sys.exit(1)
+        self.machine.open_csv_file()
         for n in self.machine.nodes.values():
             n.open_csv_file()
         if self.args.vm is True:
@@ -856,7 +920,9 @@ class VmTop:
                                 nr += 1
                     if self.csv:
                         node.output_node_csv(timestamp)
+                        self.machine.output_machine_csv(timestamp)
                     else:
+                        print(self.machine)
                         print("  Node %d: vcpu util: %0.02f%%, "
                               "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
                               "emulators steal: %0.02f%%" % (

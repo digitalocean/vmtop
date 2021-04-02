@@ -65,14 +65,17 @@ class QemuThread:
         with open(fpath, 'r') as f:
             self.cpuset = f.read().strip()
         self.nodes = self.machine.get_nodes(self.cpuset)
-        if len(self.nodes) > 1:
-            # kvm-pit is not pinned, but also mostly idle, no need to
-            # warn here
-            if 'kvm-pit' in self.thread_name:
-                return
-            print("Warning: VCPU %d from VM %d belongs to multiple nodes, "
-                  "node accounting may be inaccurate" % (self.thread_pid,
-                      self.vm_pid))
+
+        # Avoid scenario where self.nodes value is None
+        if self.nodes:
+            if len(self.nodes) > 1:
+                # kvm-pit is not pinned, but also mostly idle, no need to
+                # warn here
+                if 'kvm-pit' in self.thread_name:
+                    return
+                print("Warning: VCPU %d from VM %d belongs to multiple nodes, "
+                      "node accounting may be inaccurate" % (self.thread_pid,
+                          self.vm_pid))
 
     def get_schedstats(self):
         self.last_scrape_ts = time.time() * 1000000000
@@ -579,10 +582,19 @@ class Machine:
             mounts = f.read().split('\n')
         for m in mounts:
             m = m.split()
-            if m[0] == 'cgroup':
-                if 'cpuset' in m[3]:
-                    self.cpuset_mount_point = m[1]
-                    return
+
+            # Avoid scenrio where m is empty
+            if m:
+                if m[0] == 'cgroup':
+                    if 'cpuset' in m[3]:
+                        self.cpuset_mount_point = m[1]
+                        return
+                    elif 'cgroup2' in m[2]:
+                        self.cpuset_mount_point = m[1]
+                        return
+                    else:
+                        print("Cgroup cpuset path not found")
+
 
     def refresh_stats(self):
         for node in self.nodes.values():
@@ -643,15 +655,16 @@ class Machine:
     def get_nodes(self, cpuset):
         nodes = []
         fullpath = "%s/%s/cpuset.cpus" % (self.cpuset_mount_point, cpuset)
-        with open(fullpath, 'r') as f:
-            cpus = mixrange(f.read())
-        for c in cpus:
-            for n in self.nodes.values():
-                if c in n.hwthread_list:
-                    if n not in nodes:
-                        nodes.append(n)
-                    break
-        return nodes
+        if os.path.exists(fullpath):
+            with open(fullpath, 'r') as f:
+                cpus = mixrange(f.read())
+            for c in cpus:
+                for n in self.nodes.values():
+                    if c in n.hwthread_list:
+                        if n not in nodes:
+                            nodes.append(n)
+                        break
+            return nodes
 
     @property
     def nr_nodes(self):

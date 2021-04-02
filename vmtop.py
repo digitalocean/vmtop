@@ -228,18 +228,18 @@ class VM:
         else:
             return self.args.vm_format.format(
                     self.name, str(self.vm_pid),
-                    "%0.02f %%" % self.vcpu_sum_pc_util,
-                    "%0.02f %%" % self.vcpu_sum_pc_steal,
-                    "%0.02f %%" % self.vhost_sum_pc_util,
-                    "%0.02f %%" % self.vhost_sum_pc_steal,
-                    "%0.02f %%" % self.emulators_sum_pc_util,
-                    "%0.02f %%" % self.emulators_sum_pc_steal,
-                    "%0.02f MB/s" % self.mb_read,
-                    "%0.02f MB/s" % self.mb_write,
-                    "%0.02f Mbps" % self.rx_rate,
-                    "%0.02f Mbps" % self.tx_rate,
-                    "%0.02f pkt/s" % self.rx_rate_dropped,
-                    "%0.02f pkt/s" % self.tx_rate_dropped)
+                    "%0.02f" % self.vcpu_sum_pc_util,
+                    "%0.02f" % self.vcpu_sum_pc_steal,
+                    "%0.02f" % self.vhost_sum_pc_util,
+                    "%0.02f" % self.vhost_sum_pc_steal,
+                    "%0.02f" % self.emulators_sum_pc_util,
+                    "%0.02f" % self.emulators_sum_pc_steal,
+                    "%0.02f" % self.mb_read,
+                    "%0.02f" % self.mb_write,
+                    "%0.02f" % self.rx_rate,
+                    "%0.02f" % self.tx_rate,
+                    "%0.02f" % self.rx_rate_dropped,
+                    "%0.02f" % self.tx_rate_dropped)
 
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
@@ -876,7 +876,7 @@ class VmTop:
         elif self.args.sort == 'tx_dropped':
             self.args.sort = 'tx_rate_dropped'
 
-        self.args.vm_format = '{:<19s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}{:<13s}{:<13s}{:<13s}{:<13s}'
+        self.args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}'
 
         # filter by node
         if self.args.node is not None:
@@ -944,10 +944,15 @@ class VmTop:
                         print("Node %d:" % node.id)
                         if not self.args.vcpu:
                             print(self.args.vm_format.format(
-                                "Name", "PID", "vcpu util", "vcpu steal",
-                                "vhost util", "vhost steal", "emu util",
-                                "emu steal", "disk read", "disk write",
-                                "rx", "tx", "rx_dropped", "tx_dropped"))
+                                "Name", "PID", "vcpu", "vcpu",
+                                "vhost", "vhost", "emu",
+                                "emu", "disk", "disk",
+                                "rx", "tx", "rx_drop", "tx_drop"))
+                            print(self.args.vm_format.format(
+                                "", "", "util%", "steal%",
+                                "util%", "steal%", "util%",
+                                "steal%", "rd MB/s", "wr MB/s",
+                                "Mbps", "Mbps", "pkt/s", "pkt/s"))
                     for vm in (sorted(node.node_vms.values(),
                                       key=operator.attrgetter(self.args.sort),
                                       reverse=True)):

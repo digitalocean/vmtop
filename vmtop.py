@@ -159,8 +159,8 @@ class NIC:
         self.get_stats()
         diff_sec = self.last_scrape_ts - prev_scrape_ts
         mb = 1024.0 * 1024.0
-        self.rx_rate = (self.last_rx - prev_rx) / diff_sec / mb
-        self.tx_rate = (self.last_tx - prev_tx) / diff_sec / mb
+        self.rx_rate = ((self.last_rx - prev_rx) * 8) / diff_sec / mb
+        self.tx_rate = ((self.last_tx - prev_tx) * 8) / diff_sec / mb
         self.rx_rate_dropped = (self.last_rx_dropped - prev_rx_dropped) / diff_sec
         self.tx_rate_dropped = (self.last_tx_dropped - prev_tx_dropped) / diff_sec
 
@@ -236,8 +236,8 @@ class VM:
                     "%0.02f %%" % self.emulators_sum_pc_steal,
                     "%0.02f MB/s" % self.mb_read,
                     "%0.02f MB/s" % self.mb_write,
-                    "%0.02f MB/s" % self.rx_rate,
-                    "%0.02f MB/s" % self.tx_rate,
+                    "%0.02f Mbps" % self.rx_rate,
+                    "%0.02f Mbps" % self.tx_rate,
                     "%0.02f pkt/s" % self.rx_rate_dropped,
                     "%0.02f pkt/s" % self.tx_rate_dropped)
 

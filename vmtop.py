@@ -118,8 +118,12 @@ class NIC:
         self.last_scrape_ts = None
         self.last_rx = None
         self.last_tx = None
+        self.last_rx_drop = None
+        self.last_tx_drop = None
         self.tx_rate = None
         self.rx_rate = None
+        self.tx_rate_dropped = None
+        self.rx_rate_dropped = None
         self.get_stats()
 
     def get_stats(self):
@@ -132,21 +136,33 @@ class NIC:
             with open('/sys/devices/virtual/net/%s/statistics/rx_bytes' %
                       self.name, 'r') as f:
                 self.last_tx = int(f.read().strip())
+            with open('/sys/devices/virtual/net/%s/statistics/tx_dropped' %
+                      self.name, 'r') as f:
+                self.last_rx_dropped = int(f.read().strip())
+            with open('/sys/devices/virtual/net/%s/statistics/rx_dropped' %
+                      self.name, 'r') as f:
+                self.last_tx_dropped = int(f.read().strip())
         except:
             # VM Teardown
             self.last_rx = 0
             self.last_tx = 0
+            self.last_rx_dropped = 0
+            self.last_tx_dropped = 0
             return
 
     def refresh_stats(self):
         prev_scrape_ts = self.last_scrape_ts
         prev_rx = self.last_rx
         prev_tx = self.last_tx
+        prev_rx_dropped = self.last_rx_dropped
+        prev_tx_dropped = self.last_tx_dropped
         self.get_stats()
         diff_sec = self.last_scrape_ts - prev_scrape_ts
         mb = 1024.0 * 1024.0
         self.rx_rate = (self.last_rx - prev_rx) / diff_sec / mb
         self.tx_rate = (self.last_tx - prev_tx) / diff_sec / mb
+        self.rx_rate_dropped = (self.last_rx_dropped - prev_rx_dropped) / diff_sec
+        self.tx_rate_dropped = (self.last_tx_dropped - prev_tx_dropped) / diff_sec
 
 
 class VM:
@@ -221,13 +237,16 @@ class VM:
                     "%0.02f MB/s" % self.mb_read,
                     "%0.02f MB/s" % self.mb_write,
                     "%0.02f MB/s" % self.rx_rate,
-                    "%0.02f MB/s" % self.tx_rate)
+                    "%0.02f MB/s" % self.tx_rate,
+                    "%0.02f pkt/s" % self.rx_rate_dropped,
+                    "%0.02f pkt/s" % self.tx_rate_dropped)
 
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
         self.csv = open(fname, 'w')
         self.csv.write("timestamp,pid,name,node,vcpu_util,vcpu_steal,emulators_util,"
-                "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx\n")
+                "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx,"
+                "rx_dropped,tx_dropped\n")
 
     def output_vm_csv(self, timestamp):
         # Output the CSV file
@@ -245,7 +264,9 @@ class VM:
                        f"{'%0.02f' % (abs(self.mb_read))},"
                        f"{'%0.02f' % (abs(self.mb_write))},"
                        f"{'%0.02f' % (abs(self.rx_rate))},"
-                       f"{'%0.02f' % (abs(self.tx_rate))}\n")
+                       f"{'%0.02f' % (abs(self.tx_rate))},"
+                       f"{'%0.02f' % (abs(self.rx_rate_dropped))},"
+                       f"{'%0.02f' % (abs(self.tx_rate_dropped))}\n")
 
     def get_nic_info(self):
         for fd in os.listdir(f'/proc/{self.vm_pid}/fd/'):
@@ -404,11 +425,15 @@ class VM:
 
         self.tx_rate = 0
         self.rx_rate = 0
+        self.tx_rate_dropped = 0
+        self.rx_rate_dropped = 0
         if not self.args.no_nic:
             for n in self.nics.values():
                 n.refresh_stats()
                 self.tx_rate += n.tx_rate
                 self.rx_rate += n.rx_rate
+                self.tx_rate_dropped += n.tx_rate_dropped
+                self.rx_rate_dropped += n.rx_rate_dropped
 
         # copy to node stats
         self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
@@ -800,7 +825,7 @@ class VmTop:
                                      'vhost_util', 'vhost_steal',
                                      'disk_read', 'disk_write',
                                      'emulators_util', 'emulators_steal',
-                                     'rx', 'tx'],
+                                     'rx', 'tx', 'rx_dropped', 'tx_dropped'],
                             default='vcpu_util',
                             help='sort order for VM list, default: vcpu_util')
         parser.add_argument('-p', '--pid', type=str,
@@ -846,8 +871,12 @@ class VmTop:
             self.args.sort = 'rx_rate'
         elif self.args.sort == 'tx':
             self.args.sort = 'tx_rate'
+        elif self.args.sort == 'rx_dropped':
+            self.args.sort = 'rx_rate_dropped'
+        elif self.args.sort == 'tx_dropped':
+            self.args.sort = 'tx_rate_dropped'
 
-        self.args.vm_format = '{:<19s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}{:<13s}{:<13s}'
+        self.args.vm_format = '{:<19s}{:<8s}{:<12s}{:<12s}{:<12s}{:<12s}{:<10s}{:<10s}{:<13s}{:<13s}{:<13s}{:<13s}{:<13s}{:<13s}'
 
         # filter by node
         if self.args.node is not None:
@@ -918,7 +947,7 @@ class VmTop:
                                 "Name", "PID", "vcpu util", "vcpu steal",
                                 "vhost util", "vhost steal", "emu util",
                                 "emu steal", "disk read", "disk write",
-                                "rx", "tx"))
+                                "rx", "tx", "rx_dropped", "tx_dropped"))
                     for vm in (sorted(node.node_vms.values(),
                                       key=operator.attrgetter(self.args.sort),
                                       reverse=True)):

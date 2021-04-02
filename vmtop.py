@@ -883,6 +883,10 @@ class VmTop:
             else:
                 timestamp = int(time.time())
             self.machine.refresh_stats()
+            if self.csv:
+                self.machine.output_machine_csv(timestamp)
+            else:
+                print(self.machine)
 
             try:
                 # Prevent the list of VMs per node to be updated during
@@ -920,9 +924,7 @@ class VmTop:
                                 nr += 1
                     if self.csv:
                         node.output_node_csv(timestamp)
-                        self.machine.output_machine_csv(timestamp)
                     else:
-                        print(self.machine)
                         print("  Node %d: vcpu util: %0.02f%%, "
                               "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
                               "emulators steal: %0.02f%%" % (

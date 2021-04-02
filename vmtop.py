@@ -2,6 +2,10 @@
 
 # TODO:
 #  - system-wide metrics
+#  - /sys/devices/system/node/nodeX/numastat
+#  - can we get guest throttling data (for live migration) ?
+#  - user-controlled list metrics to show, the list is getting large
+#  - vmexit rate + reasons
 #  - arbitrary groups of processes metrics (kernel threads,
 #    middleware, etc)
 #  - parallel scrape

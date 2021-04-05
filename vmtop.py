@@ -209,6 +209,10 @@ class VM:
             self.get_nic_info()
         self.refresh_io_stats()
 
+    @property
+    def nr_vcpus(self):
+        return len(self.vcpu_threads.keys())
+
     def __str__(self):
         if self.args.vcpu:
             vm = "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, " \
@@ -508,12 +512,12 @@ class Node:
                             f"{self.node_vcpu_threads},"
                             f"{self.vm_mem_allocated/1024},"
                             f"{self.vm_mem_used/1024},"
-                            f"{'%0.02f' % (self.vcpu_sum_pc_util / self.nr_hwthreads)},"
-                            f"{'%0.02f' % (self.vcpu_sum_pc_steal / self.nr_hwthreads)},"
-                            f"{'%0.02f' % (self.emulators_sum_pc_util / self.nr_hwthreads)},"
-                            f"{'%0.02f' % (self.emulators_sum_pc_steal / self.nr_hwthreads)},"
-                            f"{'%0.02f' % (self.vhost_sum_pc_util / self.nr_hwthreads)},"
-                            f"{'%0.02f' % (self.vhost_sum_pc_steal / self.nr_hwthreads)}\n")
+                            f"{'%0.02f' % (self.vcpu_sum_pc_util)},"
+                            f"{'%0.02f' % (self.vcpu_sum_pc_steal)},"
+                            f"{'%0.02f' % (self.emulators_sum_pc_util)},"
+                            f"{'%0.02f' % (self.emulators_sum_pc_steal)},"
+                            f"{'%0.02f' % (self.vhost_sum_pc_util)},"
+                            f"{'%0.02f' % (self.vhost_sum_pc_steal)}\n")
 
     def output_allocation(self):
         print("  Node %d: %s" % (self.id, self.print_node_initial_count()))
@@ -634,6 +638,15 @@ class Machine:
                 vm.refresh_stats()
         finally:
             self.all_vms_lock.release()
+        # Normalize by CPU count
+        for node in self.nodes.values():
+            node.vcpu_sum_pc_util /= node.nr_hwthreads
+            node.vcpu_sum_pc_steal /= node.nr_hwthreads
+            node.vhost_sum_pc_util /= node.nr_hwthreads
+            node.vhost_sum_pc_steal /= node.nr_hwthreads
+            node.emulators_sum_pc_util /= node.nr_hwthreads
+            node.emulators_sum_pc_steal /= node.nr_hwthreads
+
         self.refresh_machine_stats()
 
     def account_vcpus(self):
@@ -842,6 +855,8 @@ class VmTop:
                             help='Output as CSV files in provided folder name')
         parser.add_argument('--emulators', action='store_true',
                             help='show emulators stats (implies --vm)')
+        parser.add_argument('--balance', action='store_true',
+                            help='Propose a way to balance load between nodes')
         parser.add_argument('--vm', action='store_true',
                             help='show vm stats')
         parser.add_argument('--node', type=str,
@@ -911,6 +926,83 @@ class VmTop:
                 self.machine.cancel = True
                 sys.exit(1)
 
+    def check_balance(self):
+        # PoC, lots of assumptions here...
+        # Try to optimize the load by proposing a balance between nodes:
+        # - find the busiest node
+        # - if above a threshold:
+        #   - find the busiest VM running there
+        #   - find the calmest VM on the other node with the same allocation
+        #     - if no VM of the same size is found, use more than one (TODO)
+        #   - propose a swap
+        if not self.args.balance or self.machine.nr_nodes < 2:
+            return
+
+        busiest_node_steal = 0
+        busiest_node = None
+        calmest_node_steal = None
+        calmest_node = None
+        # Find the busiest and calmest nodes
+        for node in self.machine.nodes.values():
+            if node.vcpu_sum_pc_steal > busiest_node_steal:
+                busiest_node_steal = node.vcpu_sum_pc_steal
+                busiest_node = node
+            if calmest_node_steal is None or node.vcpu_sum_pc_steal < calmest_node_steal:
+                calmest_node_steal = node.vcpu_sum_pc_steal
+                calmest_node = node
+
+        # Not enough steal or capacity
+        if busiest_node_steal < 10 or calmest_node_steal > 1:
+            return
+
+        # Find the best order to swap (we temporarily need twice the memory
+        # capacity on one of the nodes)
+        to_calm = None
+        if busiest_node.vm_mem_used < calmest_node.vm_mem_used:
+            to_calm = False
+        else:
+            to_calm = True
+
+        busiest_vm = sorted(busiest_node.node_vms.values(),
+                            key=operator.attrgetter("vcpu_sum_pc_util"),
+                            reverse=True)[0]
+
+        calmest_vm = None
+        try:
+            self.machine.nodes_lock.acquire()
+            for vm in sorted(calmest_node.node_vms.values(),
+                            key=operator.attrgetter("vcpu_sum_pc_util"),
+                            reverse=False):
+                if vm.vcpu_sum_pc_util > 60:
+                    break
+                if vm.nr_vcpus == busiest_vm.nr_vcpus and \
+                        vm.mem_allocated == busiest_vm.mem_allocated:
+                    calmest_vm = vm
+                    break
+        finally:
+            self.machine.nodes_lock.release()
+
+        if calmest_vm is None:
+            print("Didn't find a candidate to swap with %s (%s): %d vcpus, %m mem" % (
+                busiest_vm.name, busiest_vm.vm_pid, busiest_vm.nr_vcpus,
+                busiest_vm.mem_allocated))
+            return
+
+        if to_calm is True:
+            print(f"Would migrate {busiest_vm.name} ({busiest_vm.vm_pid}) "
+                  f"{'%0.02f%%' % (busiest_vm.vcpu_sum_pc_util)} from node "
+                  f"{busiest_node.id} to node {calmest_node.id}")
+            print(f"Would migrate {calmest_vm.name} ({calmest_vm.vm_pid}) "
+                  f"{'%0.02f%%' % (calmest_vm.vcpu_sum_pc_util)} from node "
+                  f"{calmest_node.id} to node {busiest_node.id}")
+        else:
+            print(f"Would migrate {calmest_vm.name} ({calmest_vm.vm_pid}) "
+                  f"{'%0.02f%%' % (calmest_vm.vcpu_sum_pc_util)} from node "
+                  f"{calmest_node.id} to node {busiest_node.id}")
+            print(f"Would migrate {busiest_vm.name} ({busiest_vm.vm_pid}) "
+                  f"{'%0.02f%%' % (busiest_vm.vcpu_sum_pc_util)} from node "
+                  f"{busiest_node.id} to node {calmest_node.id}")
+
     def loop(self):
         while not self.machine.cancel:
             try:
@@ -924,11 +1016,12 @@ class VmTop:
             if not self.vm_alloc_thread.is_alive():
                 print("Background allocation thread died, exiting")
                 sys.exit(1)
+            self.machine.refresh_stats()
+            self.check_balance()
             if self.csv is False:
                 print("\n%s" % datetime.today())
             else:
                 timestamp = int(time.time())
-            self.machine.refresh_stats()
             if self.csv:
                 self.machine.output_machine_csv(timestamp)
             else:
@@ -980,10 +1073,10 @@ class VmTop:
                               "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
                               "emulators steal: %0.02f%%" % (
                                   node.id,
-                                  node.vcpu_sum_pc_util / node.nr_hwthreads,
-                                  node.vcpu_sum_pc_steal / node.nr_hwthreads,
-                                  node.emulators_sum_pc_util / node.nr_hwthreads,
-                                  node.emulators_sum_pc_steal / node.nr_hwthreads))
+                                  node.vcpu_sum_pc_util,
+                                  node.vcpu_sum_pc_steal,
+                                  node.emulators_sum_pc_util,
+                                  node.emulators_sum_pc_steal))
                         self.machine.print_node_count(node.id)
             finally:
                 self.machine.nodes_lock.release()

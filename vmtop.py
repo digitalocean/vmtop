@@ -631,14 +631,16 @@ class Machine:
             # Avoid scenrio where m is empty
             if m:
                 if m[0] == 'cgroup':
+                    if 'unified' in m[1]:
+                        continue
                     if 'cpuset' in m[3]:
                         self.cpuset_mount_point = m[1]
                         return
                     elif 'cgroup2' in m[2]:
                         self.cpuset_mount_point = m[1]
                         return
-                    else:
-                        print("Cgroup cpuset path not found")
+        if self.cpuset_mount_point is None:
+            print("Cgroup cpuset path not found")
 
 
     def refresh_stats(self):

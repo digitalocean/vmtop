@@ -49,6 +49,7 @@ class QemuThread:
         self.diff_steal = 0
         self.diff_util = 0
         self.diff_ts = 0
+        self.warned = False
         self.get_thread_name()
         self.get_thread_cpuset()
         self.get_schedstats()
@@ -62,24 +63,30 @@ class QemuThread:
             self.thread_name = f.read().strip()
 
     def get_thread_cpuset(self):
-        if self.vhost is True:
-            fpath = '/proc/%s/cpuset' % (self.thread_pid)
-        else:
-            fpath = '/proc/%s/task/%s/cpuset' % (self.vm_pid, self.thread_pid)
-        with open(fpath, 'r') as f:
-            self.cpuset = f.read().strip()
+        try:
+            if self.vhost is True:
+                fpath = '/proc/%s/cpuset' % (self.thread_pid)
+            else:
+                fpath = '/proc/%s/task/%s/cpuset' % (self.vm_pid, self.thread_pid)
+            with open(fpath, 'r') as f:
+                self.cpuset = f.read().strip()
+        except:
+            # Teardown
+            self.nodes = []
+            return
         self.nodes = self.machine.get_nodes(self.cpuset)
 
-        # Avoid scenario where self.nodes value is None
-        if self.nodes:
-            if len(self.nodes) > 1:
-                # kvm-pit is not pinned, but also mostly idle, no need to
-                # warn here
-                if 'kvm-pit' in self.thread_name:
-                    return
-                print("Warning: thread %d from VM %d belongs to multiple nodes, "
-                      "node accounting may be inaccurate" % (self.thread_pid,
-                          self.vm_pid))
+        if len(self.nodes) != 1:
+            # kvm-pit is not pinned, but also mostly idle, no need to
+            # warn here
+            if 'kvm-pit' in self.thread_name:
+                return
+            if self.warned is True:
+                return
+            print("Warning: thread %d from VM %d belongs to multiple nodes, "
+                  "node accounting may be inaccurate" % (self.thread_pid,
+                      self.vm_pid))
+            self.warned = True
 
     def get_schedstats(self):
         self.last_scrape_ts = time.time() * 1000000000
@@ -176,17 +183,29 @@ class VM:
         self.machine = machine
         self.name = None
         self.csv = None
-        self.warned = False
+        # If the memory is on a different primary node than the vcpus
+        self.warned_vcpu_mem_split = False
+        # If the vcpus of that VM are running on different nodes
+        self.warned_vcpu_split = False
         self.mem_allocated = 0
         self.clear_stats()
 
         # We assume all the allocated memory was allocated to fit on
         # only one node, we still track the real usage on each node.
         # changes protected by machine.nodes_lock.
-        self.primary_node = None
+        self.mem_primary_node = None
         # If a VM changed node, store it here and update with
         # machine.nodes_lock is held by the vm allocation thread
-        self.new_primary_node = None
+        self.new_mem_primary_node = None
+
+        # Same thing with vcpus, we try to find the node where most
+        # vcpus use and set it as default. If the VM is unpinned or
+        # pinned to multiple nodes, we use mem_primary_node as an
+        # assumption (and warn).
+        # VMs are accounted for in vcpu_primary_node because this tool
+        # first metric is CPU usage.
+        self.vcpu_primary_node = None
+        self.new_vcpu_primary_node = None
 
         self.mem_used_per_node = {}
         self.total_vcpu_count = 0
@@ -206,7 +225,8 @@ class VM:
             self.open_vm_csv()
         self.get_threads()
         self.get_node_memory()
-        self.check_vcpu_split()
+        self.refresh_vcpu_primary_node()
+        self.check_vcpu_mem_split()
         if self.args.no_nic is not True:
             self.get_nic_info()
         self.refresh_io_stats()
@@ -215,15 +235,54 @@ class VM:
     def nr_vcpus(self):
         return len(self.vcpu_threads.keys())
 
-    def check_vcpu_split(self):
-        if self.warned is True:
+    def set_vcpu_primary_node(self, new_node):
+        if self.vcpu_primary_node == new_node:
+            return
+        if self.vcpu_primary_node is not None:
+            # We cannot update the primary node directly, because of
+            # concurrency between the 2 threads, so if the node needs
+            # to be updated, set the new_ value and wait for the
+            # alloc thread to update with the lock held.
+            self.new_vcpu_primary_node = new_node
+        else:
+            self.vcpu_primary_node = new_node
+
+    def refresh_vcpu_primary_node(self):
+        tmp_primary = None
+        for vcpu in self.vcpu_threads.values():
+            # if any vcpu is floating to more than one node or we didn't
+            # manage to find the node, assign it to the primary memory node
+            # we already warned about this.
+            if len(vcpu.nodes) != 1:
+                self.set_vcpu_primary_node(self.mem_primary_node)
+                break
+            if tmp_primary is None:
+                tmp_primary = vcpu.nodes[0]
+            elif vcpu.nodes[0] != tmp_primary:
+                self.set_vcpu_primary_node(self.mem_primary_node)
+                if self.warned_vcpu_split is False:
+                    print(f"Warning: VM {self.name} has vcpus pinned to "
+                          f"different nodes, accounting will not be accurate")
+                    self.warned_vcpu_split = True
+                break
+        self.set_vcpu_primary_node(tmp_primary)
+        if self.vcpu_primary_node is None:
+            print(f"Failed to set the vcpu primary node for VM {self.name}")
+
+    def refresh_vcpu_node(self):
+        for vcpu in self.vcpu_threads.values():
+            vcpu.get_thread_cpuset()
+        self.refresh_vcpu_primary_node()
+
+    def check_vcpu_mem_split(self):
+        if self.warned_vcpu_mem_split is True:
             return
         for vcpu in self.vcpu_threads.values():
-            if len(vcpu.nodes) == 1 and vcpu.nodes[0] != self.primary_node:
+            if len(vcpu.nodes) == 1 and vcpu.nodes[0] != self.mem_primary_node:
                 print(f"Warning: VCPU thread {vcpu.thread_pid} from VM "
                       f"{self.name} is not pinned on the same node as its "
                       f"memory")
-                self.warned = True
+                self.warned_vcpu_mem_split = True
 
     def __str__(self):
         if self.args.vcpu:
@@ -264,7 +323,7 @@ class VM:
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
         self.csv = open(fname, 'w')
-        self.csv.write("timestamp,pid,name,node,vcpu_util,vcpu_steal,emulators_util,"
+        self.csv.write("timestamp,pid,name,mem_node,vcpu_node,vcpu_util,vcpu_steal,emulators_util,"
                 "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx,"
                 "rx_dropped,tx_dropped\n")
 
@@ -274,7 +333,8 @@ class VM:
         # while...
         self.csv.write(f"{datetime.fromtimestamp(timestamp)},"
                        f"{self.vm_pid},{self.name},"
-                       f"{self.primary_node.id},"
+                       f"{self.mem_primary_node.id},"
+                       f"{self.vcpu_primary_node.id},"
                        f"{'%0.02f' % (abs(self.vcpu_sum_pc_util))},"
                        f"{'%0.02f' % (abs(self.vcpu_sum_pc_steal))},"
                        f"{'%0.02f' % (abs(self.emulators_sum_pc_util))},"
@@ -391,10 +451,10 @@ class VM:
                 maxnode = node_id
                 maxmem = mem
 
-        if self.primary_node is None:
-            self.primary_node = self.machine.nodes[maxnode]
-        elif self.primary_node != self.machine.nodes[maxnode]:
-            self.new_primary_node = self.machine.nodes[maxnode]
+        if self.mem_primary_node is None:
+            self.mem_primary_node = self.machine.nodes[maxnode]
+        elif self.mem_primary_node != self.machine.nodes[maxnode]:
+            self.new_mem_primary_node = self.machine.nodes[maxnode]
 
     def clear_stats(self):
         self.vcpu_sum_pc_util = 0
@@ -456,12 +516,12 @@ class VM:
                 self.rx_rate_dropped += n.rx_rate_dropped
 
         # copy to node stats
-        self.primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
-        self.primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
-        self.primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
-        self.primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
-        self.primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
-        self.primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
+        self.vcpu_primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
+        self.vcpu_primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
+        self.vcpu_primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
+        self.vcpu_primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
+        self.vcpu_primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
+        self.vcpu_primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
 
 
 class Node:
@@ -496,6 +556,7 @@ class Node:
         tmp_vm_mem_used = 0
         for vm in self.node_vms.values():
             vm.get_node_memory()
+            vm.refresh_vcpu_node()
             tmp_vm_mem_allocated += vm.mem_allocated
             tmp_vm_mem_used += vm.mem_used_per_node[self.id]
         self.vm_mem_allocated = tmp_vm_mem_allocated
@@ -668,7 +729,7 @@ class Machine:
         for node_id in self.nodes.keys():
             tmp[node_id] = 0
         for vm in self.all_vms.values():
-            tmp[vm.primary_node.id] += len(vm.vcpu_threads.keys())
+            tmp[vm.vcpu_primary_node.id] += len(vm.vcpu_threads.keys())
         for node_id in self.nodes.keys():
             self.nodes[node_id].node_vcpu_threads = tmp[node_id]
 
@@ -680,24 +741,34 @@ class Machine:
                     return
                 time.sleep(0.1)
             self.list_vms()
-            for vm in self.all_vms.values():
-                # If a VM switched node
-                if vm.new_primary_node is not None:
-                    try:
-                        self.nodes_lock.acquire()
-                        del vm.primary_node.node_vms[vm.vm_pid]
-                        vm.primary_node.vm_mem_allocated -= vm.mem_allocated
-
-                        vm.new_primary_node.node_vms[vm.vm_pid] = vm
-                        vm.new_primary_node.vm_mem_allocated += vm.mem_allocated
-                        vm.primary_node = vm.new_primary_node
-                        vm.new_primary_node = None
-                    finally:
-                        self.nodes_lock.release()
             for node in self.nodes.values():
                 if self.cancel is True:
                     return
                 node.refresh_vm_allocation()
+            for vm in self.all_vms.values():
+                # If a VM switched memory node
+                if vm.new_mem_primary_node is not None:
+                    try:
+                        self.nodes_lock.acquire()
+                        vm.mem_primary_node.vm_mem_allocated -= vm.mem_allocated
+                        vm.new_mem_primary_node.vm_mem_allocated += vm.mem_allocated
+                        vm.mem_primary_node = vm.new_mem_primary_node
+                        vm.new_mem_primary_node = None
+                    finally:
+                        self.nodes_lock.release()
+                # If a VM switched vcpu node
+                if vm.new_vcpu_primary_node is not None:
+                    try:
+                        self.nodes_lock.acquire()
+                        del vm.vcpu_primary_node.node_vms[vm.vm_pid]
+                        vm.vcpu_primary_node.node_vcpu_threads -= vm.nr_vcpus
+
+                        vm.new_vcpu_primary_node.node_vms[vm.vm_pid] = vm
+                        vm.new_vcpu_primary_node.node_vcpu_threads += vm.nr_vcpus
+                        vm.vcpu_primary_node = vm.new_vcpu_primary_node
+                        vm.new_vcpu_primary_node = None
+                    finally:
+                        self.nodes_lock.release()
             self.account_vcpus()
 
     def print_initial_count(self):
@@ -748,7 +819,7 @@ class Machine:
 
     def del_vm(self, pid):
         v = self.all_vms[pid]
-        del v.primary_node.node_vms[pid]
+        del v.vcpu_primary_node.node_vms[pid]
         try:
             self.all_vms_lock.acquire()
             del self.all_vms[pid]
@@ -793,7 +864,7 @@ class Machine:
             except:
                 print("Unexpected error on VM creation:", sys.exc_info())
                 continue
-            v.primary_node.node_vms[pid] = v
+            v.vcpu_primary_node.node_vms[pid] = v
             try:
                 self.all_vms_lock.acquire()
                 self.all_vms[pid] = v

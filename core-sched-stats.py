@@ -78,6 +78,7 @@ class Process:
                                   sibling_tuple,
                                   co_sched_ns)
         else:
+            sibling_tid = sibling_tuple[1]
             print("Missing case %s and %s" % (prev_tuple, sibling_tid))
 
     def __str__(self):

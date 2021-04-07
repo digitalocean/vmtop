@@ -176,6 +176,7 @@ class VM:
         self.machine = machine
         self.name = None
         self.csv = None
+        self.warned = False
         self.mem_allocated = 0
         self.clear_stats()
 
@@ -215,11 +216,14 @@ class VM:
         return len(self.vcpu_threads.keys())
 
     def check_vcpu_split(self):
+        if self.warned is True:
+            return
         for vcpu in self.vcpu_threads.values():
             if len(vcpu.nodes) == 1 and vcpu.nodes[0] != self.primary_node:
                 print(f"Warning: VCPU thread {vcpu.thread_pid} from VM "
                       f"{self.name} is not pinned on the same node as its "
                       f"memory")
+                self.warned = True
 
     def __str__(self):
         if self.args.vcpu:

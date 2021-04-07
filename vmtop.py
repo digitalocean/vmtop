@@ -377,7 +377,7 @@ class VM:
                     comm = _f.read()
                 tid = int(tid)
                 thread = QemuThread(self.vm_pid, tid, self.machine)
-            except:
+            except FileNotFoundError:
                 # Ignore threads that disappear for now (temporary workers)
                 continue
             if 'CPU' in comm:

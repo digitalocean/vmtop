@@ -77,7 +77,7 @@ class QemuThread:
                 # warn here
                 if 'kvm-pit' in self.thread_name:
                     return
-                print("Warning: VCPU %d from VM %d belongs to multiple nodes, "
+                print("Warning: thread %d from VM %d belongs to multiple nodes, "
                       "node accounting may be inaccurate" % (self.thread_pid,
                           self.vm_pid))
 
@@ -205,6 +205,7 @@ class VM:
             self.open_vm_csv()
         self.get_threads()
         self.get_node_memory()
+        self.check_vcpu_split()
         if self.args.no_nic is not True:
             self.get_nic_info()
         self.refresh_io_stats()
@@ -212,6 +213,13 @@ class VM:
     @property
     def nr_vcpus(self):
         return len(self.vcpu_threads.keys())
+
+    def check_vcpu_split(self):
+        for vcpu in self.vcpu_threads.values():
+            if len(vcpu.nodes) == 1 and vcpu.nodes[0] != self.primary_node:
+                print(f"Warning: VCPU thread {vcpu.thread_pid} from VM "
+                      f"{self.name} is not pinned on the same node as its "
+                      f"memory")
 
     def __str__(self):
         if self.args.vcpu:

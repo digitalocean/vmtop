@@ -553,14 +553,11 @@ class Node:
 
     def refresh_vm_allocation(self):
         tmp_vm_mem_allocated = 0
-        tmp_vm_mem_used = 0
         for vm in self.node_vms.values():
             vm.get_node_memory()
             vm.refresh_vcpu_node()
             tmp_vm_mem_allocated += vm.mem_allocated
-            tmp_vm_mem_used += vm.mem_used_per_node[self.id]
         self.vm_mem_allocated = tmp_vm_mem_allocated
-        self.vm_mem_used = tmp_vm_mem_used
 
     def print_node_initial_count(self):
         if self.args.csv is not None:
@@ -741,10 +738,7 @@ class Machine:
                     return
                 time.sleep(0.1)
             self.list_vms()
-            for node in self.nodes.values():
-                if self.cancel is True:
-                    return
-                node.refresh_vm_allocation()
+            self.refresh_mem_allocation()
             for vm in self.all_vms.values():
                 # If a VM switched memory node
                 if vm.new_mem_primary_node is not None:
@@ -827,10 +821,19 @@ class Machine:
             self.all_vms_lock.release()
 
     def refresh_mem_allocation(self):
+        tmp_vm_used_per_node = {}
         for node in self.nodes.values():
             if self.cancel is True:
                 return
+            tmp_vm_used_per_node[node.id] = 0
             node.refresh_vm_allocation()
+
+        for vm in self.all_vms.values():
+            for node_id in vm.mem_used_per_node.keys():
+                tmp_vm_used_per_node[node_id] += vm.mem_used_per_node[node_id]
+
+        for node_id in self.nodes.keys():
+            self.nodes[node_id].vm_mem_used = tmp_vm_used_per_node[node_id]
 
     def list_vms(self, progress=False):
         cmd = ["pgrep", "qemu"]

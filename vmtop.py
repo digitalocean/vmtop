@@ -35,7 +35,7 @@ def mixrange(s):
 
 
 class QemuThread:
-    def __init__(self, vm_pid, thread_pid, machine, vhost=False):
+    def __init__(self, vm_pid, cgroup, thread_pid, machine, vhost=False):
         self.vm_pid = vm_pid
         self.machine = machine
         self.thread_pid = thread_pid
@@ -44,6 +44,7 @@ class QemuThread:
         self.last_scrape_ts = None
         self.nodes = None
         self.vhost = vhost
+        self.cgroup = cgroup
         self.pc_steal = 0.0
         self.pc_util = 0.0
         self.diff_steal = 0
@@ -64,12 +65,22 @@ class QemuThread:
 
     def get_thread_cpuset(self):
         try:
-            if self.vhost is True:
-                fpath = '/proc/%s/cpuset' % (self.thread_pid)
-            else:
+            if self.vhost is not True:
                 fpath = '/proc/%s/task/%s/cpuset' % (self.vm_pid, self.thread_pid)
             with open(fpath, 'r') as f:
-                self.cpuset = f.read().strip()
+                line = f.read().strip()
+                # Cgroup1
+                if self.cgroup != 2:
+                    self.cpuset = line
+                else:
+                    # Cgroup2
+                    # If cpuset controller is not enabled, then it may just
+                    # return "/machine.slice" for the /proc/<pid>/cpuset
+                    if line != "/machine.slice":
+                        self.cpuset = line
+                    else:
+                        print("Please check if cpuset controller is enabled")
+                        sys.exit(1)
         except:
             # Teardown
             self.nodes = []
@@ -376,7 +387,7 @@ class VM:
                 with open(fname, 'r') as _f:
                     comm = _f.read()
                 tid = int(tid)
-                thread = QemuThread(self.vm_pid, tid, self.machine)
+                thread = QemuThread(self.vm_pid, self.machine.cgroup, tid, self.machine)
             except FileNotFoundError:
                 # Ignore threads that disappear for now (temporary workers)
                 continue
@@ -391,7 +402,7 @@ class VM:
                 cmd, shell=False).strip().decode("utf-8").split('\n')
         for p in pids:
             tid = int(p)
-            thread = QemuThread(self.vm_pid, tid, self.machine, vhost=True)
+            thread = QemuThread(self.vm_pid, self.machine.cgroup, tid, self.machine, vhost=True)
             self.vhost_threads[tid] = thread
 
     def get_vm_info(self):
@@ -614,6 +625,7 @@ class Machine:
 
         self.nodes = {}
         self.all_vms = {}
+        self.cgroup = self.check_cgroup()
         self.get_cpuset_mount_point()
         self.cancel = False
 
@@ -679,6 +691,15 @@ class Machine:
         self.last_cpu_irq = int(cpu[6])
         self.last_cpu_softirq = int(cpu[7])
         self.last_cpu_guest = int(cpu[9])
+
+    def check_cgroup(self):
+        # Check if cgroup2 is configured
+        cgroup2_path = "/sys/fs/cgroup/cgroup.controllers"
+        isfile = os.path.exists(cgroup2_path)
+        if isfile:
+            return(2)
+        else:
+            return(1)
 
     def get_cpuset_mount_point(self):
         with open('/proc/mounts', 'r') as f:

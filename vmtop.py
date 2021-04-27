@@ -22,6 +22,7 @@ import argparse
 import shutil
 from datetime import datetime
 
+stop = False
 
 def mixrange(s):
     r = []
@@ -755,7 +756,7 @@ class Machine:
         while True:
             # Sleep 1s between scans
             for i in range(10):
-                if self.cancel is True:
+                if stop is True:
                     return
                 time.sleep(0.1)
             self.list_vms()
@@ -905,13 +906,13 @@ class Machine:
 
 
 class VmTop:
-    def __init__(self):
-        self.parse_args()
+    def __init__(self, args):
+        self.args = args
         self.machine = Machine(self.args)
-        signal.signal(signal.SIGTERM, self.exit_gracefully)
+
         print("Collecting VM informations...")
         self.machine.get_info()
-        self.vm_alloc_thread = None
+
         if self.args.csv is not None:
             self.csv = True
             self.open_csv_files()
@@ -929,89 +930,6 @@ class VmTop:
         self.vm_alloc_thread = threading.Thread(
                 target=self.machine.refresh_vm_allocation)
         self.vm_alloc_thread.start()
-
-        # Main loop
-        try:
-            self.loop()
-        finally:
-            # If the main loop crashes, cancel the poller thread
-            self.machine.cancel = True
-
-    def exit_gracefully(self, signum, frame):
-        self.machine.cancel = True
-
-    def parse_args(self):
-        parser = argparse.ArgumentParser(description='Monitor local steal')
-        parser.add_argument('-r', '--refresh', type=int, default=1,
-                            help='refresh rate (seconds)')
-        parser.add_argument('-l', '--limit', type=int,
-                            help='limit to top X VMs per node')
-        parser.add_argument('-s', '--sort', type=str,
-                            choices=['vcpu_util', 'vcpu_steal',
-                                     'vhost_util', 'vhost_steal',
-                                     'disk_read', 'disk_write',
-                                     'emulators_util', 'emulators_steal',
-                                     'rx', 'tx', 'rx_dropped', 'tx_dropped'],
-                            default='vcpu_util',
-                            help='sort order for VM list, default: vcpu_util')
-        parser.add_argument('-p', '--pid', type=str,
-                            help='Limit to pid (csv), implies --vm')
-        parser.add_argument('--vcpu', action='store_true',
-                            help='show vcpu stats (implies --vm)')
-        parser.add_argument('--no-nic', action='store_true',
-                            help='Don\'t collect NIC info')
-        parser.add_argument('--csv', type=str,
-                            help='Output as CSV files in provided folder name')
-        parser.add_argument('--emulators', action='store_true',
-                            help='show emulators stats (implies --vm)')
-        parser.add_argument('--balance', action='store_true',
-                            help='Propose a way to balance load between nodes')
-        parser.add_argument('--vm', action='store_true',
-                            help='show vm stats')
-        parser.add_argument('--node', type=str,
-                            help='Limit to specific NUMA node (csv)')
-        self.args = parser.parse_args()
-        if self.args.vcpu is True or self.args.emulators is True:
-            self.args.vm = True
-        if self.args.pid is not None:
-            self.args.vm = True
-            self.args.pids = []
-            for i in self.args.pid.split(','):
-                self.args.pids.append(int(i))
-        # Sort mapping to variable name
-        if self.args.sort == 'vcpu_util':
-            self.args.sort = 'vcpu_sum_pc_util'
-        elif self.args.sort == 'vcpu_steal':
-            self.args.sort = 'vcpu_sum_pc_steal'
-        elif self.args.sort == 'vhost_util':
-            self.args.sort = 'vhost_sum_pc_util'
-        elif self.args.sort == 'vhost_steal':
-            self.args.sort = 'vhost_sum_pc_steal'
-        elif self.args.sort == 'emulators_util':
-            self.args.sort = 'emulators_sum_pc_util'
-        elif self.args.sort == 'emulators_steal':
-            self.args.sort = 'emulators_sum_pc_steal'
-        elif self.args.sort == 'disk_read':
-            self.args.sort = 'mb_read'
-        elif self.args.sort == 'disk_write':
-            self.args.sort = 'mb_write'
-        elif self.args.sort == 'rx':
-            self.args.sort = 'rx_rate'
-        elif self.args.sort == 'tx':
-            self.args.sort = 'tx_rate'
-        elif self.args.sort == 'rx_dropped':
-            self.args.sort = 'rx_rate_dropped'
-        elif self.args.sort == 'tx_dropped':
-            self.args.sort = 'tx_rate_dropped'
-
-        self.args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}'
-
-        # filter by node
-        if self.args.node is not None:
-            nodes = []
-            for n in self.args.node.split(','):
-                nodes.append(int(n))
-            self.args.node = nodes
 
     def open_csv_files(self):
         try:
@@ -1032,8 +950,9 @@ class VmTop:
         if self.args.csv is not None:
             if shutil.disk_usage(self.args.csv)[2] < 1*1024*1024*1024:
                 print("Less than 1GB available on disk, exiting")
-                self.machine.cancel = True
-                sys.exit(1)
+                return False
+
+        return True
 
     def check_balance(self):
         # PoC, lots of assumptions here...
@@ -1112,90 +1031,201 @@ class VmTop:
                   f"{'%0.02f%%' % (busiest_vm.vcpu_sum_pc_util)} from node "
                   f"{busiest_node.id} to node {calmest_node.id}")
 
-    def loop(self):
-        while not self.machine.cancel:
-            try:
-                time.sleep(self.args.refresh)
-            except KeyboardInterrupt:
-                if self.vm_alloc_thread is not None:
-                    self.machine.cancel = True
-                    self.vm_alloc_thread.join()
-                return
-            self.check_diskspace()
-            if not self.vm_alloc_thread.is_alive():
-                print("Background allocation thread died, exiting")
-                sys.exit(1)
-            self.machine.refresh_stats()
-            self.check_balance()
-            if self.csv is False:
-                print("\n%s" % datetime.today())
-            else:
-                timestamp = int(time.time())
-            if self.csv:
-                self.machine.output_machine_csv(timestamp)
-            else:
-                print(self.machine)
 
-            try:
-                # Prevent the list of VMs per node to be updated during
-                # the output
-                self.machine.nodes_lock.acquire()
-                for node in self.machine.nodes.keys():
-                    if self.args.node is not None:
-                        if node not in self.args.node:
-                            continue
-                    nr = 0
-                    node = self.machine.nodes[node]
-                    if self.args.vm and self.csv is False:
-                        print("Node %d:" % node.id)
-                        if not self.args.vcpu:
-                            print(self.args.vm_format.format(
-                                "Name", "PID", "vcpu", "vcpu",
-                                "vhost", "vhost", "emu",
-                                "emu", "disk", "disk",
-                                "rx", "tx", "rx_drop", "tx_drop"))
-                            print(self.args.vm_format.format(
-                                "", "", "util%", "steal%",
-                                "util%", "steal%", "util%",
-                                "steal%", "rd MB/s", "wr MB/s",
-                                "Mbps", "Mbps", "pkt/s", "pkt/s"))
-                    for vm in (sorted(node.node_vms.values(),
-                                      key=operator.attrgetter(self.args.sort),
-                                      reverse=True)):
-                        if self.args.vm:
-                            if self.args.pid is not None:
-                                if vm.vm_pid in self.args.pids:
-                                    print(vm)
+    def stop(self):
+        exit_gracefully(0, 0)
+        if self.vm_alloc_thread.is_alive():
+            self.vm_alloc_thread.join()
+
+    def run_once(self):
+        if self.check_diskspace() == False:
+            self.stop()
+            return
+
+        self.machine.refresh_stats()
+        self.check_balance()
+
+        if self.csv is False:
+            print("\n%s" % datetime.today())
+        else:
+            timestamp = int(time.time())
+        if self.csv:
+            self.machine.output_machine_csv(timestamp)
+        else:
+            print(self.machine)
+
+        try:
+            # Prevent the list of VMs per node to be updated during
+            # the output
+            self.machine.nodes_lock.acquire()
+            for node in self.machine.nodes.keys():
+                if self.args.node is not None:
+                    if node not in self.args.node:
+                        continue
+                nr = 0
+                node = self.machine.nodes[node]
+                if self.args.vm and self.csv is False:
+                    print("Node %d:" % node.id)
+                    if not self.args.vcpu:
+                        print(self.args.vm_format.format(
+                            "Name", "PID", "vcpu", "vcpu",
+                            "vhost", "vhost", "emu",
+                            "emu", "disk", "disk",
+                            "rx", "tx", "rx_drop", "tx_drop"))
+                        print(self.args.vm_format.format(
+                            "", "", "util%", "steal%",
+                            "util%", "steal%", "util%",
+                            "steal%", "rd MB/s", "wr MB/s",
+                            "Mbps", "Mbps", "pkt/s", "pkt/s"))
+                for vm in (sorted(node.node_vms.values(),
+                                  key=operator.attrgetter(self.args.sort),
+                                  reverse=True)):
+                    if self.args.vm:
+                        if self.args.pid is not None:
+                            if vm.vm_pid in self.args.pids:
+                                print(vm)
+                        else:
+                            if self.args.limit is not None and \
+                                    nr >= self.args.limit:
+                                break
+                            if self.csv is True:
+                                vm.output_vm_csv(timestamp)
                             else:
-                                if self.args.limit is not None and \
-                                        nr >= self.args.limit:
-                                    break
-                                if self.csv is True:
-                                    vm.output_vm_csv(timestamp)
-                                else:
-                                    print(vm)
-                                nr += 1
-                    if self.csv:
-                        node.output_node_csv(timestamp)
-                    else:
-                        print("  Node %d: vcpu util: %0.02f%%, "
-                              "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
-                              "emulators steal: %0.02f%%" % (
-                                  node.id,
-                                  node.vcpu_sum_pc_util,
-                                  node.vcpu_sum_pc_steal,
-                                  node.emulators_sum_pc_util,
-                                  node.emulators_sum_pc_steal))
-                        self.machine.print_node_count(node.id)
-            finally:
-                self.machine.nodes_lock.release()
+                                print(vm)
+                            nr += 1
+                if self.csv:
+                    node.output_node_csv(timestamp)
+                else:
+                    print("  Node %d: vcpu util: %0.02f%%, "
+                          "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
+                          "emulators steal: %0.02f%%" % (
+                              node.id,
+                              node.vcpu_sum_pc_util,
+                              node.vcpu_sum_pc_steal,
+                              node.emulators_sum_pc_util,
+                              node.emulators_sum_pc_steal))
+                    self.machine.print_node_count(node.id)
+        finally:
+            self.machine.nodes_lock.release()
 
-    def run(self):
-        pass
+        time.sleep(self.args.refresh)
 
-if os.geteuid() != 0:
-    print("Need to run as root")
-    sys.exit(1)
+    def loop(self):
+        while stop == False:
+            try:
+                self.run_once()
+            except:
+                break
+        self.stop()
 
-s = VmTop()
-s.run()
+    def run(self, ntimes):
+        for _ in range(ntimes):
+            try:
+                self.run_once()
+            except:
+                break
+        self.stop()
+
+def exit_gracefully(signum, frame):
+    global stop
+    stop = True
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Monitor local steal')
+    parser.add_argument('-r', '--refresh', type=int, default=1,
+                        help='refresh rate (seconds)')
+    parser.add_argument('-l', '--limit', type=int,
+                        help='limit to top X VMs per node')
+    parser.add_argument('-n', '--number', type=int, default=0,
+                        help='gather stats N times and exit')
+    parser.add_argument('-s', '--sort', type=str,
+                        choices=['vcpu_util', 'vcpu_steal',
+                                 'vhost_util', 'vhost_steal',
+                                 'disk_read', 'disk_write',
+                                 'emulators_util', 'emulators_steal',
+                                 'rx', 'tx', 'rx_dropped', 'tx_dropped'],
+                        default='vcpu_util',
+                        help='sort order for VM list, default: vcpu_util')
+    parser.add_argument('-p', '--pid', type=str,
+                        help='Limit to pid (csv), implies --vm')
+    parser.add_argument('--vcpu', action='store_true',
+                        help='show vcpu stats (implies --vm)')
+    parser.add_argument('--no-nic', action='store_true',
+                        help='Don\'t collect NIC info')
+    parser.add_argument('--csv', type=str,
+                        help='Output as CSV files in provided folder name')
+    parser.add_argument('--emulators', action='store_true',
+                        help='show emulators stats (implies --vm)')
+    parser.add_argument('--balance', action='store_true',
+                        help='Propose a way to balance load between nodes')
+    parser.add_argument('--vm', action='store_true',
+                        help='show vm stats')
+    parser.add_argument('--node', type=str,
+                        help='Limit to specific NUMA node (csv)')
+ 
+    args = parser.parse_args()
+
+    if args.vcpu is True or args.emulators is True:
+        args.vm = True
+    if args.pid is not None:
+        args.vm = True
+        args.pids = []
+        for i in args.pid.split(','):
+            args.pids.append(int(i))
+    # Sort mapping to variable name
+    if args.sort == 'vcpu_util':
+        args.sort = 'vcpu_sum_pc_util'
+    elif args.sort == 'vcpu_steal':
+        args.sort = 'vcpu_sum_pc_steal'
+    elif args.sort == 'vhost_util':
+        args.sort = 'vhost_sum_pc_util'
+    elif args.sort == 'vhost_steal':
+        args.sort = 'vhost_sum_pc_steal'
+    elif args.sort == 'emulators_util':
+        args.sort = 'emulators_sum_pc_util'
+    elif args.sort == 'emulators_steal':
+        args.sort = 'emulators_sum_pc_steal'
+    elif args.sort == 'disk_read':
+        args.sort = 'mb_read'
+    elif args.sort == 'disk_write':
+        args.sort = 'mb_write'
+    elif args.sort == 'rx':
+        args.sort = 'rx_rate'
+    elif args.sort == 'tx':
+        args.sort = 'tx_rate'
+    elif args.sort == 'rx_dropped':
+        args.sort = 'rx_rate_dropped'
+    elif args.sort == 'tx_dropped':
+        args.sort = 'tx_rate_dropped'
+
+    args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}'
+
+    # filter by node
+    if args.node is not None:
+        nodes = []
+        for n in args.node.split(','):
+            nodes.append(int(n))
+        args.node = nodes
+
+    return args
+
+
+def main():
+    if os.geteuid() != 0:
+        print("Need to run as root")
+        return 1
+
+    args = parse_args()
+    signal.signal(signal.SIGTERM, exit_gracefully)
+
+    s = VmTop(args)
+
+    if args.number > 0:
+        s.run(args.number)
+    else:
+        s.loop()
+
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

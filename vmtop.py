@@ -359,6 +359,7 @@ class VM:
                        f"{'%0.02f' % (abs(self.tx_rate))},"
                        f"{'%0.02f' % (abs(self.rx_rate_dropped))},"
                        f"{'%0.02f' % (abs(self.tx_rate_dropped))}\n")
+        self.csv.flush()
 
     def get_nic_info(self):
         for fd in os.listdir(f'/proc/{self.vm_pid}/fd/'):
@@ -600,6 +601,7 @@ class Node:
                             f"{'%0.02f' % (self.emulators_sum_pc_steal)},"
                             f"{'%0.02f' % (self.vhost_sum_pc_util)},"
                             f"{'%0.02f' % (self.vhost_sum_pc_steal)}\n")
+        self.node_csv.flush()
 
     def output_allocation(self):
         print("  Node %d: %s" % (self.id, self.print_node_initial_count()))
@@ -669,6 +671,7 @@ class Machine:
         self.machine_csv = open(fname, 'w')
         self.machine_csv.write("timestamp,cpu_user,cpu_nice,cpu_system,"
                                "cpu_idle,cpu_iowait,cpu_irq,cpu_guest\n")
+        self.machine_csv.flush()
 
     def output_machine_csv(self, timestamp):
         self.machine_csv.write(f"{datetime.fromtimestamp(timestamp)},"

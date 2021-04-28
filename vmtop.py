@@ -1115,18 +1115,12 @@ class VmTop:
 
     def loop(self):
         while stop == False:
-            try:
-                self.run_once()
-            except:
-                break
+            self.run_once()
         self.stop()
 
     def run(self, ntimes):
         for _ in range(ntimes):
-            try:
-                self.run_once()
-            except:
-                break
+            self.run_once()
         self.stop()
 
 def exit_gracefully(signum, frame):

@@ -1216,6 +1216,7 @@ def main():
 
     args = parse_args()
     signal.signal(signal.SIGTERM, exit_gracefully)
+    signal.signal(signal.SIGINT, exit_gracefully)
 
     # Daemonize vmtop if --daemon option specificed
     # Supported with --csv flag

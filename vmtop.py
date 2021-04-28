@@ -1150,6 +1150,8 @@ def parse_args():
                         help='Limit to pid (csv), implies --vm')
     parser.add_argument('--vcpu', action='store_true',
                         help='show vcpu stats (implies --vm)')
+    parser.add_argument('--daemon', action='store_true',
+                        help='daemonize vmtop (works with --csv)')
     parser.add_argument('--no-nic', action='store_true',
                         help='Don\'t collect NIC info')
     parser.add_argument('--csv', type=str,
@@ -1218,12 +1220,35 @@ def main():
     args = parse_args()
     signal.signal(signal.SIGTERM, exit_gracefully)
 
-    s = VmTop(args)
+    # Daemonize vmtop if --daemon option specificed
+    # Supported with --csv flag
+    if args.daemon and args.csv is not None:
+        try:
+            import daemon
+        except ImportError:
+            print("Warning: python3-daemon not found! Please install and re-run")
+            exit(1)
+        cwd = os.getcwd()
+        with daemon.DaemonContext(stdout=sys.stdout,
+            stderr = sys.stdout,
+            working_directory = cwd,
+            umask = 0o002,
+            signal_map={
+            signal.SIGTERM: exit_gracefully
+        }):
+            s = VmTop(args)
+            if args.number > 0:
+                s.run(args.number)
+            else:
+                s.loop()
 
-    if args.number > 0:
-        s.run(args.number)
     else:
-        s.loop()
+        s = VmTop(args)
+
+        if args.number > 0:
+            s.run(args.number)
+        else:
+            s.loop()
 
     return 0
 

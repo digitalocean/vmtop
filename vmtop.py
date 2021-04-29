@@ -234,6 +234,7 @@ class VM:
         self.last_io_write_bytes = None
 
         self.last_vmexit_count = 0
+        self.last_vmexit_diff = 0
 
         self.get_vm_info()
         if self.args.csv is not None and self.args.vm is True:
@@ -301,17 +302,15 @@ class VM:
 
     def get_exit_count(self):
         if self.args.vmexit is False:
-            return -1
+            return
         try:
             c = self.machine.bpf["exitcount"][ctypes.c_uint(self.vm_pid)].value
-            diff = c - self.last_vmexit_count
+            self.last_vmexit_diff = c - self.last_vmexit_count
             self.last_vmexit_count = c
-            return diff
         except:
-            return 0
+            pass
 
     def __str__(self):
-        exit_count = self.get_exit_count()
         if self.args.vcpu:
             vm = "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, " \
                     "vhost util: %0.02f%%, vhost steal: %0.02f%%" \
@@ -346,14 +345,14 @@ class VM:
                     "%0.02f" % self.tx_rate,
                     "%0.02f" % self.rx_rate_dropped,
                     "%0.02f" % self.tx_rate_dropped,
-                    "%d" % exit_count)
+                    "%d" % self.last_vmexit_diff)
 
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
         self.csv = open(fname, 'w')
         self.csv.write("timestamp,pid,name,mem_node,vcpu_node,vcpu_util,vcpu_steal,emulators_util,"
                 "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx,"
-                "rx_dropped,tx_dropped\n")
+                "rx_dropped,tx_dropped,vmexit_count\n")
 
     def output_vm_csv(self, timestamp):
         # Output the CSV file
@@ -551,6 +550,8 @@ class VM:
         self.vcpu_primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
         self.vcpu_primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
         self.vcpu_primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
+
+        self.get_exit_count()
 
 
 class Node:

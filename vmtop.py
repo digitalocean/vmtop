@@ -16,6 +16,7 @@ import operator
 import threading
 import time
 import signal
+import ctypes
 import os
 import sys
 import argparse
@@ -296,7 +297,16 @@ class VM:
                       f"memory")
                 self.warned_vcpu_mem_split = True
 
+    def get_exit_count(self):
+        if self.args.vmexit is False:
+            return -1
+        try:
+            return self.machine.bpf["exitcount"][ctypes.c_uint(self.vm_pid)].value
+        except:
+            return 0
+
     def __str__(self):
+        exit_count = self.get_exit_count()
         if self.args.vcpu:
             vm = "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, " \
                     "vhost util: %0.02f%%, vhost steal: %0.02f%%" \
@@ -330,7 +340,8 @@ class VM:
                     "%0.02f" % self.rx_rate,
                     "%0.02f" % self.tx_rate,
                     "%0.02f" % self.rx_rate_dropped,
-                    "%0.02f" % self.tx_rate_dropped)
+                    "%0.02f" % self.tx_rate_dropped,
+                    "%d" % exit_count)
 
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
@@ -907,6 +918,23 @@ class Machine:
             for pid in previous_vm_list:
                 self.del_vm(pid)
 
+    def attach_bpf(self):
+        try:
+            from bcc import BPF
+        except ImportError:
+            print("Error: missing bcc library")
+            exit(1)
+        bpf_text = """
+#include <uapi/linux/ptrace.h>
+BPF_HASH(exitcount, u32, uint32_t);
+
+TRACEPOINT_PROBE(kvm, kvm_exit)
+{
+    exitcount.increment(bpf_get_current_pid_tgid() >> 32);
+    return 0;
+}
+"""
+        self.bpf = BPF(text=bpf_text)
 
 class VmTop:
     def __init__(self, args):
@@ -921,6 +949,9 @@ class VmTop:
             self.open_csv_files()
         else:
             self.csv = False
+
+        if self.args.vmexit is True:
+            self.machine.attach_bpf()
 
         # Initial list and allocation accounting
         self.machine.list_vms(progress=True)
@@ -1074,12 +1105,12 @@ class VmTop:
                             "Name", "PID", "vcpu", "vcpu",
                             "vhost", "vhost", "emu",
                             "emu", "disk", "disk",
-                            "rx", "tx", "rx_drop", "tx_drop"))
+                            "rx", "tx", "rx_drop", "tx_drop", "vmexit"))
                         print(self.args.vm_format.format(
                             "", "", "util%", "steal%",
                             "util%", "steal%", "util%",
                             "steal%", "rd MB/s", "wr MB/s",
-                            "Mbps", "Mbps", "pkt/s", "pkt/s"))
+                            "Mbps", "Mbps", "pkt/s", "pkt/s", "count"))
                 for vm in (sorted(node.node_vms.values(),
                                   key=operator.attrgetter(self.args.sort),
                                   reverse=True)):
@@ -1161,6 +1192,8 @@ def parse_args():
                         help='show vm stats')
     parser.add_argument('--node', type=str,
                         help='Limit to specific NUMA node (csv)')
+    parser.add_argument('--vmexit', action='store_true',
+                        help='show vm exit rates and reasons')
  
     args = parser.parse_args()
 
@@ -1197,7 +1230,7 @@ def parse_args():
     elif args.sort == 'tx_dropped':
         args.sort = 'tx_rate_dropped'
 
-    args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}'
+    args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<9s}{:<8s}'
 
     # filter by node
     if args.node is not None:
@@ -1205,6 +1238,13 @@ def parse_args():
         for n in args.node.split(','):
             nodes.append(int(n))
         args.node = nodes
+
+    if args.vmexit:
+        try:
+            from bcc import BPF
+        except ImportError:
+            print("Missing bcc library for vmexit tracing")
+            exit(1)
 
     return args
 

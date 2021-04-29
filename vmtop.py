@@ -373,7 +373,8 @@ class VM:
                        f"{'%0.02f' % (abs(self.rx_rate))},"
                        f"{'%0.02f' % (abs(self.tx_rate))},"
                        f"{'%0.02f' % (abs(self.rx_rate_dropped))},"
-                       f"{'%0.02f' % (abs(self.tx_rate_dropped))}\n")
+                       f"{'%0.02f' % (abs(self.tx_rate_dropped))},"
+                       f"{'%d' % (self.last_vmexit_diff)}\n")
         self.csv.flush()
 
     def get_nic_info(self):

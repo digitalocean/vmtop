@@ -233,6 +233,8 @@ class VM:
         self.last_io_read_bytes = None
         self.last_io_write_bytes = None
 
+        self.last_vmexit_count = 0
+
         self.get_vm_info()
         if self.args.csv is not None and self.args.vm is True:
             self.open_vm_csv()
@@ -301,7 +303,10 @@ class VM:
         if self.args.vmexit is False:
             return -1
         try:
-            return self.machine.bpf["exitcount"][ctypes.c_uint(self.vm_pid)].value
+            c = self.machine.bpf["exitcount"][ctypes.c_uint(self.vm_pid)].value
+            diff = c - self.last_vmexit_count
+            self.last_vmexit_count = c
+            return diff
         except:
             return 0
 

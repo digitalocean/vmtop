@@ -247,15 +247,6 @@ class VM:
             self.get_nic_info()
         self.refresh_io_stats()
 
-        if self.args.prometheus:
-            from prometheus_client import Gauge
-            self.mb_read_gauge = Gauge("mbread", "mb read for vm", ['vm'])
-            self.mb_write_gauge = Gauge("mbwrite", "mb write for vm", ['vm'])
-            self.rx_rate_gauge = Gauge("rxrate", "rx rate for vm", ['vm'])
-            self.tx_rate_gauge = Gauge("txrate", "tx rate for vm", ['vm'])
-            self.rx_rate_dropped_gauge = Gauge("rxratedropped", "rx drop rate for vm", ['vm'])
-            self.tx_rate_dropped_gauge = Gauge("txrateddropped", "tx drop rate for vm", ['vm'])
-
     @property
     def nr_vcpus(self):
         return len(self.vcpu_threads.keys())
@@ -579,15 +570,6 @@ class Node:
         self.vm_mem_allocated = 0
         self.vm_mem_used = 0
         self.node_vcpu_threads = 0
-
-        if self.args.prometheus:
-            from prometheus_client import Gauge
-            self.vcpu_util_gauge = Gauge("node_vcpuutil", "VCPU util", ['node'])
-            self.vcpu_steal_gauge = Gauge("node_vcpusteal", "VCPU util", ['node'])
-            self.vhost_util_gauge = Gauge("node_vhostutil", "vhost util", ['node'])
-            self.vhost_steal_gauge = Gauge("node_vhoststeal", "vhost steal", ['node'])
-            self.emulators_util_gauge = Gauge("node_emulatorutil", "emulators util", ['node'])
-            self.emulators_steal_gauge = Gauge("node_emulatorsteal", "emulators steal", ['node'])
 
         self.clear_stats()
 
@@ -985,10 +967,31 @@ class VmTop:
         if self.csv is False:
             self.machine.print_initial_count()
 
+        self.setup_prometheus()
+
         # Scan for new VMs and memory/vcpu allocation in the background
         self.vm_alloc_thread = threading.Thread(
                 target=self.machine.refresh_vm_allocation)
         self.vm_alloc_thread.start()
+
+    def setup_prometheus(self):
+        if not self.args.prometheus:
+            return
+        from prometheus_client import Gauge
+        self.vm_mb_read_gauge = Gauge("vm_mbread", "mb read for vm", ['vm'])
+        self.vm_mb_write_gauge = Gauge("vm_mbwrite", "mb write for vm", ['vm'])
+        self.vm_rx_rate_gauge = Gauge("vm_rxrate", "rx rate for vm", ['vm'])
+        self.vm_tx_rate_gauge = Gauge("vm_txrate", "tx rate for vm", ['vm'])
+        self.vm_rx_rate_dropped_gauge = Gauge("vm_rxratedropped", "rx drop rate for vm", ['vm'])
+        self.vm_tx_rate_dropped_gauge = Gauge("vm_txrateddropped", "tx drop rate for vm", ['vm'])
+
+        self.vcpu_util_gauge = Gauge("node_vcpuutil", "VCPU util", ['node'])
+        self.vcpu_steal_gauge = Gauge("node_vcpusteal", "VCPU util", ['node'])
+        self.vhost_util_gauge = Gauge("node_vhostutil", "vhost util", ['node'])
+        self.vhost_steal_gauge = Gauge("node_vhoststeal", "vhost steal", ['node'])
+        self.emulators_util_gauge = Gauge("node_emulatorutil", "emulators util", ['node'])
+        self.emulators_steal_gauge = Gauge("node_emulatorsteal", "emulators steal", ['node'])
+
 
     def open_csv_files(self):
         try:
@@ -1153,12 +1156,12 @@ class VmTop:
                                 print(vm)
                             nr += 1
                     if self.args.prometheus:
-                        vm.mb_read_gauge.labels(vm=vm.name).set(vm.mb_read)
-                        vm.mb_write_gauge.labels(vm=vm.name).set(vm.mb_write)
-                        vm.rx_rate_gauge.labels(vm=vm.name).set(vm.rx_rate)
-                        vm.tx_rate_gauge.labels(vm=vm.name).set(vm.tx_rate)
-                        vm.rx_rate_dropped_gauge.labels(vm=vm.name).set(vm.rx_rate_dropped)
-                        vm.tx_rate_dropped_gauge.labels(vm=vm.name).set(vm.rx_rate_dropped)
+                        self.vm_mb_read_gauge.labels(vm=vm.name).set(vm.mb_read)
+                        self.vm_mb_write_gauge.labels(vm=vm.name).set(vm.mb_write)
+                        self.vm_rx_rate_gauge.labels(vm=vm.name).set(vm.rx_rate)
+                        self.vm_tx_rate_gauge.labels(vm=vm.name).set(vm.tx_rate)
+                        self.vm_rx_rate_dropped_gauge.labels(vm=vm.name).set(vm.rx_rate_dropped)
+                        self.vm_tx_rate_dropped_gauge.labels(vm=vm.name).set(vm.rx_rate_dropped)
                 if self.csv:
                     node.output_node_csv(timestamp)
                 else:
@@ -1173,12 +1176,12 @@ class VmTop:
                     self.machine.print_node_count(node.id)
 
                 if self.args.prometheus:
-                    node.vcpu_util_gauge.labels(node=node.id).set(node.vcpu_sum_pc_util)
-                    node.vcpu_steal_gauge.labels(node=node.id).set(node.vcpu_sum_pc_steal)
-                    node.vhost_util_gauge.labels(node=node.id).set(node.vhost_sum_pc_util)
-                    node.vhost_steal_gauge.labels(node=node.id).set(node.vhost_sum_pc_steal)
-                    node.emulators_steal_gauge.labels(node=node.id).set(node.emulators_sum_pc_util)
-                    node.emulators_steal_gauge.labels(node=node.id).set(node.emulators_sum_pc_steal)
+                    self.vcpu_util_gauge.labels(node=node.id).set(node.vcpu_sum_pc_util)
+                    self.vcpu_steal_gauge.labels(node=node.id).set(node.vcpu_sum_pc_steal)
+                    self.vhost_util_gauge.labels(node=node.id).set(node.vhost_sum_pc_util)
+                    self.vhost_steal_gauge.labels(node=node.id).set(node.vhost_sum_pc_steal)
+                    self.emulators_steal_gauge.labels(node=node.id).set(node.emulators_sum_pc_util)
+                    self.emulators_steal_gauge.labels(node=node.id).set(node.emulators_sum_pc_steal)
 
         finally:
             self.machine.nodes_lock.release()

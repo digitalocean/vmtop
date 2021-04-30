@@ -16,7 +16,6 @@ import operator
 import threading
 import time
 import signal
-import ctypes
 import os
 import sys
 import argparse
@@ -233,9 +232,6 @@ class VM:
         self.last_io_read_bytes = None
         self.last_io_write_bytes = None
 
-        self.last_vmexit_count = 0
-        self.last_vmexit_diff = 0
-
         self.get_vm_info()
         if self.args.csv is not None and self.args.vm is True:
             self.open_vm_csv()
@@ -246,6 +242,16 @@ class VM:
         if self.args.no_nic is not True:
             self.get_nic_info()
         self.refresh_io_stats()
+
+        if self.args.prometheus:
+            from prometheus_client import Gauge
+            self.mb_read_gauge = Gauge("mbread", "mb read for vm")
+            self.mb_write_gauge = Gauge("mbwrite", "mb write for vm")
+            self.rx_rate_gauge = Gauge("rxrate", "rx rate for vm")
+            self.tx_rate_gauge = Gauge("txrate", "tx rate for vm")
+            self.rx_rate_dropped_gauge = Gauge("rxratedropped", "rx drop rate for vm")
+            self.tx_rate_dropped_gauge = Gauge("txrateddropped", "tx drop rate for vm")
+
 
     @property
     def nr_vcpus(self):
@@ -300,16 +306,6 @@ class VM:
                       f"memory")
                 self.warned_vcpu_mem_split = True
 
-    def get_exit_count(self):
-        if self.args.vmexit is False:
-            return
-        try:
-            c = self.machine.bpf["exitcount"][ctypes.c_uint(self.vm_pid)].value
-            self.last_vmexit_diff = c - self.last_vmexit_count
-            self.last_vmexit_count = c
-        except:
-            pass
-
     def __str__(self):
         if self.args.vcpu:
             vm = "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, " \
@@ -344,15 +340,14 @@ class VM:
                     "%0.02f" % self.rx_rate,
                     "%0.02f" % self.tx_rate,
                     "%0.02f" % self.rx_rate_dropped,
-                    "%0.02f" % self.tx_rate_dropped,
-                    "%d" % self.last_vmexit_diff)
+                    "%0.02f" % self.tx_rate_dropped)
 
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
         self.csv = open(fname, 'w')
         self.csv.write("timestamp,pid,name,mem_node,vcpu_node,vcpu_util,vcpu_steal,emulators_util,"
                 "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx,"
-                "rx_dropped,tx_dropped,vmexit_count\n")
+                "rx_dropped,tx_dropped\n")
 
     def output_vm_csv(self, timestamp):
         # Output the CSV file
@@ -373,9 +368,7 @@ class VM:
                        f"{'%0.02f' % (abs(self.rx_rate))},"
                        f"{'%0.02f' % (abs(self.tx_rate))},"
                        f"{'%0.02f' % (abs(self.rx_rate_dropped))},"
-                       f"{'%0.02f' % (abs(self.tx_rate_dropped))},"
-                       f"{'%d' % (self.last_vmexit_diff)}\n")
-        self.csv.flush()
+                       f"{'%0.02f' % (abs(self.tx_rate_dropped))}\n")
 
     def get_nic_info(self):
         for fd in os.listdir(f'/proc/{self.vm_pid}/fd/'):
@@ -552,8 +545,6 @@ class VM:
         self.vcpu_primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
         self.vcpu_primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
 
-        self.get_exit_count()
-
 
 class Node:
     def __init__(self, _id, args):
@@ -570,6 +561,15 @@ class Node:
         self.vm_mem_allocated = 0
         self.vm_mem_used = 0
         self.node_vcpu_threads = 0
+
+        if self.args.prometheus:
+            from prometheus_client import Gauge
+            self.vcpu_util_gauge = Gauge("vcpuutil" + str(self.id), "VCPU util for node " + str(self.id))
+            self.vcpu_steal_gauge = Gauge("vcpusteal" + str(self.id), "VCPU util for node " + str(self.id))
+            self.vhost_util_gauge = Gauge("vhostutil" + str(self.id), "VCPU util for node " + str(self.id))
+            self.vhost_steal_gauge = Gauge("vhoststeal" + str(self.id), "VCPU util for node " + str(self.id))
+            self.emulators_util_gauge = Gauge("emulatorutil" + str(self.id), "VCPU util for node " + str(self.id))
+            self.emulators_steal_gauge = Gauge("emulatorsteal" + str(self.id), "VCPU util for node " + str(self.id))
 
         self.clear_stats()
 
@@ -619,7 +619,6 @@ class Node:
                             f"{'%0.02f' % (self.emulators_sum_pc_steal)},"
                             f"{'%0.02f' % (self.vhost_sum_pc_util)},"
                             f"{'%0.02f' % (self.vhost_sum_pc_steal)}\n")
-        self.node_csv.flush()
 
     def output_allocation(self):
         print("  Node %d: %s" % (self.id, self.print_node_initial_count()))
@@ -689,7 +688,6 @@ class Machine:
         self.machine_csv = open(fname, 'w')
         self.machine_csv.write("timestamp,cpu_user,cpu_nice,cpu_system,"
                                "cpu_idle,cpu_iowait,cpu_irq,cpu_guest\n")
-        self.machine_csv.flush()
 
     def output_machine_csv(self, timestamp):
         self.machine_csv.write(f"{datetime.fromtimestamp(timestamp)},"
@@ -925,23 +923,6 @@ class Machine:
             for pid in previous_vm_list:
                 self.del_vm(pid)
 
-    def attach_bpf(self):
-        try:
-            from bcc import BPF
-        except ImportError:
-            print("Error: missing bcc library")
-            exit(1)
-        bpf_text = """
-#include <uapi/linux/ptrace.h>
-BPF_HASH(exitcount, u32, uint32_t);
-
-TRACEPOINT_PROBE(kvm, kvm_exit)
-{
-    exitcount.increment(bpf_get_current_pid_tgid() >> 32);
-    return 0;
-}
-"""
-        self.bpf = BPF(text=bpf_text)
 
 class VmTop:
     def __init__(self, args):
@@ -956,9 +937,6 @@ class VmTop:
             self.open_csv_files()
         else:
             self.csv = False
-
-        if self.args.vmexit is True:
-            self.machine.attach_bpf()
 
         # Initial list and allocation accounting
         self.machine.list_vms(progress=True)
@@ -1112,12 +1090,12 @@ class VmTop:
                             "Name", "PID", "vcpu", "vcpu",
                             "vhost", "vhost", "emu",
                             "emu", "disk", "disk",
-                            "rx", "tx", "rx_drop", "tx_drop", "vmexit"))
+                            "rx", "tx", "rx_drop", "tx_drop"))
                         print(self.args.vm_format.format(
                             "", "", "util%", "steal%",
                             "util%", "steal%", "util%",
                             "steal%", "rd MB/s", "wr MB/s",
-                            "Mbps", "Mbps", "pkt/s", "pkt/s", "count"))
+                            "Mbps", "Mbps", "pkt/s", "pkt/s"))
                 for vm in (sorted(node.node_vms.values(),
                                   key=operator.attrgetter(self.args.sort),
                                   reverse=True)):
@@ -1146,6 +1124,22 @@ class VmTop:
                               node.emulators_sum_pc_util,
                               node.emulators_sum_pc_steal))
                     self.machine.print_node_count(node.id)
+
+                if self.args.prometheus:
+                    vm.mb_read_gauge.set(vm.mb_read)
+                    vm.mb_write_gauge.set(vm.mb_write)
+                    vm.rx_rate_gauge.set(vm.rx_rate)
+                    vm.tx_rate_gauge.set(vm.tx_rate)
+                    vm.rx_rate_dropped_gauge.set(vm.rx_rate_dropped)
+                    vm.tx_rate_dropped_gauge.set(vm.rx_rate_dropped)
+
+                    node.vcpu_util_gauge.set(node.vcpu_sum_pc_util)
+                    node.vcpu_steal_gauge.set(node.vcpu_sum_pc_steal)
+                    node.vhost_util_gauge.set(node.vhost_sum_pc_util)
+                    node.vhost_steal_gauge.set(node.vhost_sum_pc_steal)
+                    node.emulators_steal_gauge.set(node.emulators_sum_pc_util)
+                    node.emulators_steal_gauge.set(node.emulators_sum_pc_steal)
+
         finally:
             self.machine.nodes_lock.release()
 
@@ -1153,12 +1147,18 @@ class VmTop:
 
     def loop(self):
         while stop == False:
-            self.run_once()
+            try:
+                self.run_once()
+            except:
+                break
         self.stop()
 
     def run(self, ntimes):
         for _ in range(ntimes):
-            self.run_once()
+            try:
+                self.run_once()
+            except:
+                break
         self.stop()
 
 def exit_gracefully(signum, frame):
@@ -1199,8 +1199,8 @@ def parse_args():
                         help='show vm stats')
     parser.add_argument('--node', type=str,
                         help='Limit to specific NUMA node (csv)')
-    parser.add_argument('--vmexit', action='store_true',
-                        help='show vm exit rates and reasons')
+    parser.add_argument('--prometheus', nargs='?', const="localhost:8000",
+                        help='enable the prometheus exporter, optionally specify host:port')
  
     args = parser.parse_args()
 
@@ -1237,7 +1237,7 @@ def parse_args():
     elif args.sort == 'tx_dropped':
         args.sort = 'tx_rate_dropped'
 
-    args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<9s}{:<8s}'
+    args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}'
 
     # filter by node
     if args.node is not None:
@@ -1245,13 +1245,6 @@ def parse_args():
         for n in args.node.split(','):
             nodes.append(int(n))
         args.node = nodes
-
-    if args.vmexit:
-        try:
-            from bcc import BPF
-        except ImportError:
-            print("Missing bcc library for vmexit tracing")
-            exit(1)
 
     return args
 
@@ -1263,7 +1256,16 @@ def main():
 
     args = parse_args()
     signal.signal(signal.SIGTERM, exit_gracefully)
-    signal.signal(signal.SIGINT, exit_gracefully)
+
+    if args.prometheus:
+        try:
+            from prometheus_client import start_http_server
+            host, port = args.prometheus.split(':')
+            start_http_server(int(port), host)
+
+        except ImportError:
+            print("Warning: prometheus_client not found! Please install and re-run or remove --prometheus")
+            exit(1)
 
     # Daemonize vmtop if --daemon option specificed
     # Supported with --csv flag
@@ -1273,6 +1275,7 @@ def main():
         except ImportError:
             print("Warning: python3-daemon not found! Please install and re-run")
             exit(1)
+
         cwd = os.getcwd()
         with daemon.DaemonContext(stdout=sys.stdout,
             stderr = sys.stdout,
@@ -1299,3 +1302,4 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+

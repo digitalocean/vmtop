@@ -247,6 +247,15 @@ class VM:
             self.get_nic_info()
         self.refresh_io_stats()
 
+        if self.args.prometheus:
+            from prometheus_client import Gauge
+            self.mb_read_gauge = Gauge("mbread", "mb read for vm")
+            self.mb_write_gauge = Gauge("mbwrite", "mb write for vm")
+            self.rx_rate_gauge = Gauge("rxrate", "rx rate for vm")
+            self.tx_rate_gauge = Gauge("txrate", "tx rate for vm")
+            self.rx_rate_dropped_gauge = Gauge("rxratedropped", "rx drop rate for vm")
+            self.tx_rate_dropped_gauge = Gauge("txrateddropped", "tx drop rate for vm")
+
     @property
     def nr_vcpus(self):
         return len(self.vcpu_threads.keys())
@@ -570,6 +579,15 @@ class Node:
         self.vm_mem_allocated = 0
         self.vm_mem_used = 0
         self.node_vcpu_threads = 0
+
+        if self.args.prometheus:
+            from prometheus_client import Gauge
+            self.vcpu_util_gauge = Gauge("vcpuutil" + str(self.id), "VCPU util for node " + str(self.id))
+            self.vcpu_steal_gauge = Gauge("vcpusteal" + str(self.id), "VCPU util for node " + str(self.id))
+            self.vhost_util_gauge = Gauge("vhostutil" + str(self.id), "VCPU util for node " + str(self.id))
+            self.vhost_steal_gauge = Gauge("vhoststeal" + str(self.id), "VCPU util for node " + str(self.id))
+            self.emulators_util_gauge = Gauge("emulatorutil" + str(self.id), "VCPU util for node " + str(self.id))
+            self.emulators_steal_gauge = Gauge("emulatorsteal" + str(self.id), "VCPU util for node " + str(self.id))
 
         self.clear_stats()
 
@@ -1146,6 +1164,22 @@ class VmTop:
                               node.emulators_sum_pc_util,
                               node.emulators_sum_pc_steal))
                     self.machine.print_node_count(node.id)
+
+                if self.args.prometheus:
+                    vm.mb_read_gauge.set(vm.mb_read)
+                    vm.mb_write_gauge.set(vm.mb_write)
+                    vm.rx_rate_gauge.set(vm.rx_rate)
+                    vm.tx_rate_gauge.set(vm.tx_rate)
+                    vm.rx_rate_dropped_gauge.set(vm.rx_rate_dropped)
+                    vm.tx_rate_dropped_gauge.set(vm.rx_rate_dropped)
+
+                    node.vcpu_util_gauge.set(node.vcpu_sum_pc_util)
+                    node.vcpu_steal_gauge.set(node.vcpu_sum_pc_steal)
+                    node.vhost_util_gauge.set(node.vhost_sum_pc_util)
+                    node.vhost_steal_gauge.set(node.vhost_sum_pc_steal)
+                    node.emulators_steal_gauge.set(node.emulators_sum_pc_util)
+                    node.emulators_steal_gauge.set(node.emulators_sum_pc_steal)
+
         finally:
             self.machine.nodes_lock.release()
 
@@ -1201,6 +1235,8 @@ def parse_args():
                         help='Limit to specific NUMA node (csv)')
     parser.add_argument('--vmexit', action='store_true',
                         help='show vm exit rates and reasons')
+    parser.add_argument('--prometheus', nargs='?', const="localhost:8000",
+                        help='enable the prometheus exporter, optionally specify host:port')
  
     args = parser.parse_args()
 
@@ -1264,6 +1300,16 @@ def main():
     args = parse_args()
     signal.signal(signal.SIGTERM, exit_gracefully)
     signal.signal(signal.SIGINT, exit_gracefully)
+
+    if args.prometheus:
+        try:
+            from prometheus_client import start_http_server
+            host, port = args.prometheus.split(':')
+            start_http_server(int(port), host)
+
+        except ImportError:
+            print("Warning: prometheus_client not found! Please install and re-run or remove --prometheus")
+            exit(1)
 
     # Daemonize vmtop if --daemon option specificed
     # Supported with --csv flag

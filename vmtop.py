@@ -331,21 +331,35 @@ class VM:
                     emulators_util = "%s\n    - %s" % (emulators_util, v)
             return "%s%s%s" % (vm, vcpu_util, emulators_util)
         else:
-            return self.args.vm_format.format(
-                    self.name, str(self.vm_pid),
-                    "%0.02f" % self.vcpu_sum_pc_util,
-                    "%0.02f" % self.vcpu_sum_pc_steal,
-                    "%0.02f" % self.vhost_sum_pc_util,
-                    "%0.02f" % self.vhost_sum_pc_steal,
-                    "%0.02f" % self.emulators_sum_pc_util,
-                    "%0.02f" % self.emulators_sum_pc_steal,
-                    "%0.02f" % self.mb_read,
-                    "%0.02f" % self.mb_write,
-                    "%0.02f" % self.rx_rate,
-                    "%0.02f" % self.tx_rate,
-                    "%0.02f" % self.rx_rate_dropped,
-                    "%0.02f" % self.tx_rate_dropped,
-                    "%d" % self.last_vmexit_diff)
+            metrics = [self.name, str(self.vm_pid)]
+            for i in self.args.display_metrics:
+                if i == 'vcpu_sum_pc_util':
+                    metrics.append('%0.02f' % self.vcpu_sum_pc_util)
+                elif i == 'vcpu_sum_pc_steal':
+                    metrics.append('%0.02f' % self.vcpu_sum_pc_steal)
+                elif i == 'emulators_sum_pc_util':
+                    metrics.append('%0.02f' % self.emulators_sum_pc_util)
+                elif i == 'emulators_sum_pc_steal':
+                    metrics.append('%0.02f' % self.emulators_sum_pc_steal)
+                elif i == 'vhost_sum_pc_util':
+                    metrics.append('%0.02f' % self.vhost_sum_pc_util)
+                elif i == 'vhost_sum_pc_steal':
+                    metrics.append('%0.02f' % self.vhost_sum_pc_steal)
+                elif i == 'mb_read':
+                    metrics.append('%0.02f' % self.mb_read)
+                elif i == 'mb_write':
+                    metrics.append('%0.02f' % self.mb_write)
+                elif i == 'rx_rate':
+                    metrics.append('%0.02f' % self.rx_rate)
+                elif i == 'tx_rate':
+                    metrics.append('%0.02f' % self.tx_rate)
+                elif i == 'rx_rate_dropped':
+                    metrics.append('%0.02f' % self.rx_rate_dropped)
+                elif i == 'tx_rate_dropped':
+                    metrics.append('%0.02f' % self.tx_rate_dropped)
+                elif i == 'last_vmexit_diff':
+                    metrics.append('%d' % self.last_vmexit_diff)
+            return self.args.vm_format.format(*metrics)
 
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
@@ -1129,16 +1143,14 @@ class VmTop:
                 if self.args.vm and self.csv is False:
                     print("Node %d:" % node.id)
                     if not self.args.vcpu:
-                        print(self.args.vm_format.format(
-                            "Name", "PID", "vcpu", "vcpu",
-                            "vhost", "vhost", "emu",
-                            "emu", "disk", "disk",
-                            "rx", "tx", "rx_drop", "tx_drop", "vmexit"))
-                        print(self.args.vm_format.format(
-                            "", "", "util%", "steal%",
-                            "util%", "steal%", "util%",
-                            "steal%", "rd MB/s", "wr MB/s",
-                            "Mbps", "Mbps", "pkt/s", "pkt/s", "count"))
+                        first_row = ['name', 'PID']
+                        for i in self.args.display_metrics:
+                            first_row.append(self.args.vm_metrics[i][0])
+                        second_row = ['', '']
+                        for i in self.args.display_metrics:
+                            second_row.append(self.args.vm_metrics[i][1])
+                        print(self.args.vm_format.format(*first_row))
+                        print(self.args.vm_format.format(*second_row))
                 for vm in (sorted(node.node_vms.values(),
                                   key=operator.attrgetter(self.args.sort),
                                   reverse=True)):
@@ -1276,7 +1288,38 @@ def parse_args():
     elif args.sort == 'tx_dropped':
         args.sort = 'tx_rate_dropped'
 
-    args.vm_format = '{:<19s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<8s}{:<9s}{:<8s}'
+    # list of metrics we want to display by VM (needs to become user-definable)
+    args.display_metrics = [
+            'vcpu_sum_pc_util',
+            'vcpu_sum_pc_steal',
+            'vhost_sum_pc_util',
+            'vhost_sum_pc_steal',
+            'emulators_sum_pc_util',
+            'emulators_sum_pc_steal',
+            'mb_read',
+            'mb_write',
+            'rx_rate',
+            'tx_rate',
+            'rx_rate_dropped',
+            'tx_rate_dropped',
+            'last_vmexit_diff']
+    # Format and legend for each metric
+    args.vm_metrics = {'vcpu_sum_pc_util': ['vcpu', 'util%', '8s'],
+                       'vcpu_sum_pc_steal': ['vcpu', 'steal%', '8s'],
+                       'vhost_sum_pc_util': ['vhost', 'util%', '8s'],
+                       'vhost_sum_pc_steal': ['vhost', 'steal%', '8s'],
+                       'emulators_sum_pc_util': ['emu', 'util%', '8s'],
+                       'emulators_sum_pc_steal': ['emu', 'steal%', '8s'],
+                       'mb_read': ['disk', 'rd MB/s', '8s'],
+                       'mb_write': ['disk', 'wr MB/s', '8s'],
+                       'rx_rate': ['rx', 'MBps', '8s'],
+                       'tx_rate': ['tx', 'MBps', '8s'],
+                       'rx_rate_dropped': ['rx_drop', 'pkt/s', '8s'],
+                       'tx_rate_dropped': ['tx_drop', 'pkt/s', '9s'],
+                       'last_vmexit_diff': ['vmexit', 'count', '8s']}
+    args.vm_format = '{:<19s}{:<8s}'
+    for m in args.display_metrics:
+        args.vm_format = "%s{:<%s}" % (args.vm_format, args.vm_metrics[m][2])
 
     # filter by node
     if args.node is not None:

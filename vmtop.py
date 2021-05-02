@@ -545,12 +545,12 @@ class VM:
                 self.rx_rate_dropped += n.rx_rate_dropped
 
         # copy to node stats
-        self.vcpu_primary_node.vcpu_sum_pc_util += self.vcpu_sum_pc_util
-        self.vcpu_primary_node.vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
-        self.vcpu_primary_node.vhost_sum_pc_util += self.vhost_sum_pc_util
-        self.vcpu_primary_node.vhost_sum_pc_steal += self.vhost_sum_pc_steal
-        self.vcpu_primary_node.emulators_sum_pc_util += self.emulators_sum_pc_util
-        self.vcpu_primary_node.emulators_sum_pc_steal += self.emulators_sum_pc_steal
+        self.vcpu_primary_node.node_vcpu_sum_pc_util += self.vcpu_sum_pc_util
+        self.vcpu_primary_node.node_vcpu_sum_pc_steal += self.vcpu_sum_pc_steal
+        self.vcpu_primary_node.node_vhost_sum_pc_util += self.vhost_sum_pc_util
+        self.vcpu_primary_node.node_vhost_sum_pc_steal += self.vhost_sum_pc_steal
+        self.vcpu_primary_node.node_emulators_sum_pc_util += self.emulators_sum_pc_util
+        self.vcpu_primary_node.node_emulators_sum_pc_steal += self.emulators_sum_pc_steal
 
         self.get_exit_count()
 
@@ -575,12 +575,12 @@ class Node:
 
     def clear_stats(self):
         # Owned by the main loop
-        self.vcpu_sum_pc_util = 0
-        self.vcpu_sum_pc_steal = 0
-        self.vhost_sum_pc_util = 0
-        self.vhost_sum_pc_steal = 0
-        self.emulators_sum_pc_util = 0
-        self.emulators_sum_pc_steal = 0
+        self.node_vcpu_sum_pc_util = 0
+        self.node_vcpu_sum_pc_steal = 0
+        self.node_vhost_sum_pc_util = 0
+        self.node_vhost_sum_pc_steal = 0
+        self.node_emulators_sum_pc_util = 0
+        self.node_emulators_sum_pc_steal = 0
 
     def refresh_vm_allocation(self):
         tmp_vm_mem_allocated = 0
@@ -613,12 +613,12 @@ class Node:
                             f"{self.node_vcpu_threads},"
                             f"{self.vm_mem_allocated/1024},"
                             f"{self.vm_mem_used/1024},"
-                            f"{'%0.02f' % (self.vcpu_sum_pc_util)},"
-                            f"{'%0.02f' % (self.vcpu_sum_pc_steal)},"
-                            f"{'%0.02f' % (self.emulators_sum_pc_util)},"
-                            f"{'%0.02f' % (self.emulators_sum_pc_steal)},"
-                            f"{'%0.02f' % (self.vhost_sum_pc_util)},"
-                            f"{'%0.02f' % (self.vhost_sum_pc_steal)}\n")
+                            f"{'%0.02f' % (self.node_vcpu_sum_pc_util)},"
+                            f"{'%0.02f' % (self.node_vcpu_sum_pc_steal)},"
+                            f"{'%0.02f' % (self.node_emulators_sum_pc_util)},"
+                            f"{'%0.02f' % (self.node_emulators_sum_pc_steal)},"
+                            f"{'%0.02f' % (self.node_vhost_sum_pc_util)},"
+                            f"{'%0.02f' % (self.node_vhost_sum_pc_steal)}\n")
         self.node_csv.flush()
 
     def output_allocation(self):
@@ -755,12 +755,12 @@ class Machine:
             self.all_vms_lock.release()
         # Normalize by CPU count
         for node in self.nodes.values():
-            node.vcpu_sum_pc_util /= node.nr_hwthreads
-            node.vcpu_sum_pc_steal /= node.nr_hwthreads
-            node.vhost_sum_pc_util /= node.nr_hwthreads
-            node.vhost_sum_pc_steal /= node.nr_hwthreads
-            node.emulators_sum_pc_util /= node.nr_hwthreads
-            node.emulators_sum_pc_steal /= node.nr_hwthreads
+            node.node_vcpu_sum_pc_util /= node.nr_hwthreads
+            node.node_vcpu_sum_pc_steal /= node.nr_hwthreads
+            node.node_vhost_sum_pc_util /= node.nr_hwthreads
+            node.node_vhost_sum_pc_steal /= node.nr_hwthreads
+            node.node_emulators_sum_pc_util /= node.nr_hwthreads
+            node.node_emulators_sum_pc_steal /= node.nr_hwthreads
 
         self.refresh_machine_stats()
 
@@ -1169,19 +1169,19 @@ class VmTop:
                           "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
                           "emulators steal: %0.02f%%" % (
                               node.id,
-                              node.vcpu_sum_pc_util,
-                              node.vcpu_sum_pc_steal,
-                              node.emulators_sum_pc_util,
-                              node.emulators_sum_pc_steal))
+                              node.node_vcpu_sum_pc_util,
+                              node.node_vcpu_sum_pc_steal,
+                              node.node_emulators_sum_pc_util,
+                              node.node_emulators_sum_pc_steal))
                     self.machine.print_node_count(node.id)
 
                 if self.args.prometheus:
-                    self.vcpu_util_gauge.labels(node=node.id).set(node.vcpu_sum_pc_util)
-                    self.vcpu_steal_gauge.labels(node=node.id).set(node.vcpu_sum_pc_steal)
-                    self.vhost_util_gauge.labels(node=node.id).set(node.vhost_sum_pc_util)
-                    self.vhost_steal_gauge.labels(node=node.id).set(node.vhost_sum_pc_steal)
-                    self.emulators_steal_gauge.labels(node=node.id).set(node.emulators_sum_pc_util)
-                    self.emulators_steal_gauge.labels(node=node.id).set(node.emulators_sum_pc_steal)
+                    self.vcpu_util_gauge.labels(node=node.id).set(node.node_vcpu_sum_pc_util)
+                    self.vcpu_steal_gauge.labels(node=node.id).set(node.node_vcpu_sum_pc_steal)
+                    self.vhost_util_gauge.labels(node=node.id).set(node.node_vhost_sum_pc_util)
+                    self.vhost_steal_gauge.labels(node=node.id).set(node.node_vhost_sum_pc_steal)
+                    self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_util)
+                    self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_steal)
 
         finally:
             self.machine.nodes_lock.release()

@@ -1,16 +1,22 @@
-# KVM trace stats
+# vmtop
 
-Collection of ad-hoc tools for monitoring various performance aspects of KVM.
-The tools are in various states of maintenance, feel free to reach out if you
-have questions or suggestions for improvements.
+Monitor various metrics for KVM/qemu guests and output in a top-like fashion.
+Also aggregate the usage/allocation metrics at the NUMA node and host-level.
 
+## Main features
 
-## vmtop.py
+It can output as text on the console and write CSV files. The `graph-vmtop.py`
+script generates graphs from those CSV files (record with `--csv <dir>`).
 
-Monitor load and steal for QEMU VMs, various filtering capabilities.
-It can output as CSV and the `graph-vmtop.py` can generate graphs from those
-CSV files (record with `--csv <dir>`). Depends on `numastat` being in the `$PATH`.
+This script can also be ran with a Prometheus exporter enabled, like so:
+```
+sudo ./vmtop.py --prometheus [host:port]
+```
 
+The host and port are optional, and will default to localhost:8000 if not
+specified. 
+
+## Example output
 Example output for the top 10 VMs experiencing the most vcpu steal per node:
 
 ```
@@ -46,25 +52,51 @@ Guest20  6945    36.15 %     0.24 %      6.42 %      0.45 %      0.77 %    0.04 
   Node 1: 131 VMs (161 vcpus, 210.00 GB mem allocated, 193.42 GB mem used)
 ```
 
-Assumption: the node-level information assumes a VM mostly runs where most of
-its memory is allocated, if a VM can float between NUMA nodes, the node-level
-information may not be accurate (and a warning will be shown). The VM-level
-data is accurate regardless of the pinning.
+# Dependencies
 
-This script can also be ran with a Prometheus exporter enabled, like so:
-```
-sudo ./vmtop.py --prometheus [host:port]
-```
+The tool currently depends on `numastat` being in the `$PATH`.
 
-The host and port are optional, and will default to localhost:8000 if not specified. 
+Besides that dependency, one design rule of this tool is that it should be easy
+to just download it and run without any additional setup. We use very common
+Python modules and the advanced features such as Prometheus and eBPF are
+optional.
 
-## guesttime.bt
+This tool has been mostly tested on Ubuntu Bionic 18.04, but should be easy to
+run on other platforms.
+
+The optional dependencies are:
+* `python3-daemon` for the the `--daemon` option
+* `python3-bcc` for the `--vmexit` option
+* `python3-prometheus-client` for the `--prometheus` option
+
+## Assumptions
+
+The node-level information assumes a VM mostly runs where most of its memory is
+allocated, if a VM can float between NUMA nodes, the node-level information may
+not be accurate (and a warning will be shown). The VM-level data is accurate
+regardless of the pinning.
+
+## Feedback
+
+This tool is a quick script to solve the issue of live monitoring resource
+allocation and usage by VMs. We plan to keep improving it over time. 
+
+
+## Extras
+
+In the `extras` folder, there are other ad-hoc tools for monitoring various
+performance aspects of KVM.  The tools are in various states of maintenance,
+feel free to reach out if you have questions or suggestions for improvements.
+The features from those scripts may end up in vmtop at some point, but for now
+they are tested outside.
+
+### guesttime.bt
 
 `bpftrace` tool to check statistically how long a vCPU spends inside the guest
 when it is scheduled in.
 
 
-## Core-scheduling and KVM
+### Core-scheduling and KVM
 
 The `core-sched-stats.py` script ensures that the core scheduling
 feature works properly and accounts for the time spent by a vCPU in various

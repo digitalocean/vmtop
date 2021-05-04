@@ -964,9 +964,6 @@ class Machine:
                 self.del_vm(pid)
 
     def attach_bpf(self):
-        if import_failed_bcc is True:
-            print("Error: missing bcc library")
-            exit(1)
         bpf_text = """
 #include <uapi/linux/ptrace.h>
 BPF_HASH(exitcount, u32, uint32_t);
@@ -1159,10 +1156,8 @@ class VmTop:
         else:
             print(self.machine)
 
-        try:
-            # Prevent the list of VMs per node to be updated during
-            # the output
-            self.machine.nodes_lock.acquire()
+        # Prevent the list of VMs per node to be updated during output
+        with self.machine.nodes_lock:
             for node in self.machine.nodes.keys():
                 if self.args.node is not None:
                     if node not in self.args.node:
@@ -1233,8 +1228,6 @@ class VmTop:
                     self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_util)
                     self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_steal)
 
-        finally:
-            self.machine.nodes_lock.release()
 
         time.sleep(self.args.refresh)
 
@@ -1253,21 +1246,13 @@ def exit_gracefully(signum, frame):
     stop = True
 
 def start_prometheus_client(ip, port):
-    if import_failed_prometheus:
-        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
-        exit(1)
-
-    try:
-        start_http_server(int(port), ip)
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ret = s.connect_ex((ip, int(port)))
-        if ret == 0:
-            print("Prometheus listening on %s:%s" %(ip, port))
-        else:
-            print("Prometheus not listening on %s:%s. Please check if the specified port is not in use already" %(ip, port))
-            exit(1)
-    except Exception as e:
-        print(e)
+    start_http_server(int(port), ip)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ret = s.connect_ex((ip, int(port)))
+    if ret == 0:
+        print("Prometheus listening on %s:%s" %(ip, port))
+    else:
+        print("Prometheus not listening on %s:%s. Please check if the specified port is not in use already" %(ip, port))
         exit(1)
 
 def parse_args():
@@ -1384,6 +1369,18 @@ def parse_args():
             nodes.append(int(n))
         args.node = nodes
 
+    if args.prometheus and import_failed_prometheus:
+        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
+        exit(1)
+
+    if args.daemon and import_failed_daemon:
+        print("Warning: python3-daemon not found! Please install and re-run")
+        exit(1)
+
+    if args.vmexit and import_failed_bcc:
+        print("Error: missing bcc library")
+        exit(1)
+
     return args
 
 
@@ -1406,10 +1403,6 @@ def main():
     # Daemonize vmtop if --daemon option specificed
     # Supported with --csv and --prometheus flags
     if args.daemon and args.csv is not None or args.prometheus and args.daemon:
-        if import_failed_daemon:
-            print("Warning: python3-daemon not found! Please install and re-run")
-            exit(1)
-
         cwd = os.getcwd()
         with daemon.DaemonContext(stdout=sys.stdout,
             stderr = sys.stdout,

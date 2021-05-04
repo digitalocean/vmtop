@@ -49,6 +49,13 @@ except ImportError:
 
 stop = False
 
+def read_str(filename):
+    with open(filename, 'r') as fd:
+        return fd.read().strip()
+
+def read_int(filename):
+    return int(read_str(filename))
+
 def mixrange(s):
     r = []
     for i in s.split(","):
@@ -86,8 +93,7 @@ class QemuThread:
             fpath = '/proc/%s/comm' % (self.thread_pid)
         else:
             fpath = '/proc/%s/task/%s/comm' % (self.vm_pid, self.thread_pid)
-        with open(fpath, 'r') as f:
-            self.thread_name = f.read().strip()
+        self.thread_name = read_str(fpath)
 
     def get_thread_cpuset(self):
         try:
@@ -132,8 +138,7 @@ class QemuThread:
         else:
             fpath = '/proc/%s/task/%s/schedstat' % (self.vm_pid, self.thread_pid)
         try:
-            with open(fpath, 'r') as f:
-                stats = f.read().split(' ')
+            stats = read_str(fpath).split(' ')
         except FileNotFoundError:
             # On VM teardown return 0
             self.last_cputime = 0
@@ -178,18 +183,10 @@ class NIC:
         self.last_scrape_ts = time.time()
         # Flipped rx/tx to reflect the VM point of view
         try:
-            with open('/sys/devices/virtual/net/%s/statistics/tx_bytes' %
-                      self.name, 'r') as f:
-                self.last_rx = int(f.read().strip())
-            with open('/sys/devices/virtual/net/%s/statistics/rx_bytes' %
-                      self.name, 'r') as f:
-                self.last_tx = int(f.read().strip())
-            with open('/sys/devices/virtual/net/%s/statistics/tx_dropped' %
-                      self.name, 'r') as f:
-                self.last_rx_dropped = int(f.read().strip())
-            with open('/sys/devices/virtual/net/%s/statistics/rx_dropped' %
-                      self.name, 'r') as f:
-                self.last_tx_dropped = int(f.read().strip())
+            self.last_rx = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/tx_bytes')
+            self.last_tx = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/rx_bytes')
+            self.last_rx_dropped = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/tx_dropped')
+            self.last_tx_dropped = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/rx_dropped')
         except:
             # VM Teardown
             self.last_rx = 0
@@ -597,7 +594,8 @@ class Node:
     def __init__(self, _id, args):
         self.id = _id
         self.args = args
-        self.hwthread_list = []
+        self.hwthread_list = Node.node_hwthreads(_id)
+
         # Approximation, VMs could be split between nodes, we use the node
         # where most of the memory is allocated to decide here
         self.node_vms = {}
@@ -662,6 +660,19 @@ class Node:
     def output_allocation(self):
         print("  Node %d: %s" % (self.id, self.print_node_initial_count()))
 
+    # -1 when no numa nodes
+    def node_list():
+        if os.path.exists('/sys/devices/system/node/online'):
+            return mixrange(read_str('/sys/devices/system/node/online'))
+        else:
+            return [-1]
+
+    def node_hwthreads(node_n):
+        if node_n == -1:
+            return mixrange(read_str('/sys/devices/system/cpu/online'))
+        else:
+            return mixrange(read_str(f'/sys/devices/system/node/node{node_n}/cpulist'))
+
     @property
     def nr_vms(self):
         return len(self.node_vms)
@@ -689,6 +700,9 @@ class Machine:
         self.cancel = False
 
         self.get_machine_stat()
+
+        for n in Node.node_list():
+            self.nodes[n] = Node(n, self.args)
 
     def refresh_machine_stats(self):
         nr_hwthreads = self.nr_hwthreads
@@ -879,19 +893,6 @@ class Machine:
             nr += len(n.hwthread_list)
         return nr
 
-    def get_info(self):
-        cmd = "lscpu | egrep 'NUMA node[0-9]+ CPU'"
-        numa_info = subprocess.check_output(
-                cmd, shell=True).strip().decode("utf-8")
-        for i in numa_info.split("\n"):
-            node_id = int(i.split(' ')[1].replace('node', ''))
-            node = Node(node_id, self.args)
-            hwthreads = i.split(':')[1].replace(' ', '')
-            _i = mixrange(hwthreads)
-            for j in _i:
-                node.hwthread_list.append(int(j))
-            self.nodes[node_id] = node
-
     def del_vm(self, pid):
         v = self.all_vms[pid]
         del v.vcpu_primary_node.node_vms[pid]
@@ -982,7 +983,6 @@ class VmTop:
         self.machine = Machine(self.args)
 
         print("Collecting VM informations...")
-        self.machine.get_info()
 
         if self.args.csv is not None:
             self.csv = True

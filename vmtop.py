@@ -21,7 +21,31 @@ import os
 import sys
 import argparse
 import shutil
+import socket
 from datetime import datetime
+
+# optional dependencies
+# bcc for vmexit
+import_failed_bcc = False
+try:
+    from bcc import BPF
+except ImportError:
+    import_failed_bcc = True
+
+# prometheus
+import_failed_prometheus = False
+try:
+    from prometheus_client import Gauge
+    from prometheus_client import start_http_server
+except ImportError:
+    import_failed_prometheus = True
+
+# daemon mode
+import_failed_daemon = False
+try:
+    import daemon
+except ImportError:
+    import_failed_daemon = True
 
 stop = False
 
@@ -940,9 +964,7 @@ class Machine:
                 self.del_vm(pid)
 
     def attach_bpf(self):
-        try:
-            from bcc import BPF
-        except ImportError:
+        if import_failed_bcc is True:
             print("Error: missing bcc library")
             exit(1)
         bpf_text = """
@@ -991,7 +1013,6 @@ class VmTop:
     def setup_prometheus(self):
         if not self.args.prometheus:
             return
-        from prometheus_client import Gauge
         self.vm_mb_read_gauge = Gauge("vm_mbread", "mb read for vm", ['vm'])
         self.vm_mb_write_gauge = Gauge("vm_mbwrite", "mb write for vm", ['vm'])
         self.vm_rx_rate_gauge = Gauge("vm_rxrate", "rx rate for vm", ['vm'])
@@ -1232,9 +1253,11 @@ def exit_gracefully(signum, frame):
     stop = True
 
 def start_prometheus_client(ip, port):
+    if import_failed_prometheus:
+        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
+        exit(1)
+
     try:
-        from prometheus_client import start_http_server
-        import socket
         start_http_server(int(port), ip)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         ret = s.connect_ex((ip, int(port)))
@@ -1243,11 +1266,6 @@ def start_prometheus_client(ip, port):
         else:
             print("Prometheus not listening on %s:%s. Please check if the specified port is not in use already" %(ip, port))
             exit(1)
-
-    except ImportError:
-        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
-        exit(1)
-
     except Exception as e:
         print(e)
         exit(1)
@@ -1366,13 +1384,6 @@ def parse_args():
             nodes.append(int(n))
         args.node = nodes
 
-    if args.vmexit:
-        try:
-            from bcc import BPF
-        except ImportError:
-            print("Missing bcc library for vmexit tracing")
-            exit(1)
-
     return args
 
 
@@ -1395,10 +1406,7 @@ def main():
     # Daemonize vmtop if --daemon option specificed
     # Supported with --csv and --prometheus flags
     if args.daemon and args.csv is not None or args.prometheus and args.daemon:
-        try:
-            import daemon
-
-        except ImportError:
+        if import_failed_daemon:
             print("Warning: python3-daemon not found! Please install and re-run")
             exit(1)
 

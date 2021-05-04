@@ -1156,10 +1156,8 @@ class VmTop:
         else:
             print(self.machine)
 
-        try:
-            # Prevent the list of VMs per node to be updated during
-            # the output
-            self.machine.nodes_lock.acquire()
+        # Prevent the list of VMs per node to be updated during output
+        with self.machine.nodes_lock:
             for node in self.machine.nodes.keys():
                 if self.args.node is not None:
                     if node not in self.args.node:
@@ -1230,8 +1228,6 @@ class VmTop:
                     self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_util)
                     self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_steal)
 
-        finally:
-            self.machine.nodes_lock.release()
 
         time.sleep(self.args.refresh)
 

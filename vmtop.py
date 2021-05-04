@@ -998,6 +998,14 @@ class VmTop:
         self.vm_tx_rate_gauge = Gauge("vm_txrate", "tx rate for vm", ['vm'])
         self.vm_rx_rate_dropped_gauge = Gauge("vm_rxratedropped", "rx drop rate for vm", ['vm'])
         self.vm_tx_rate_dropped_gauge = Gauge("vm_txrateddropped", "tx drop rate for vm", ['vm'])
+        self.vm_vcpu_util_gauge = Gauge("vm_vcpu_util", "VCPU util", ['vm'])
+        self.vm_vcpu_steal_gauge = Gauge("vm_vcpu_steal", "VCPU util", ['vm'])
+        self.vm_vhost_util_gauge = Gauge("vm_vhost_util", "vhost util", ['vm'])
+        self.vm_vhost_steal_gauge = Gauge("vm_vhost_steal", "vhost steal", ['vm'])
+        self.vm_emulators_util_gauge = Gauge("vm_emulators_util", "emulators util", ['vm'])
+        self.vm_emulators_steal_gauge = Gauge("vm_emulators_steal", "emulators steal", ['vm'])
+        if self.args.vmexit is True:
+            self.vm_vmexits_gauge = Gauge("vm_vmexit_rate", "vm exit rate", ['vm'])
 
         self.vcpu_util_gauge = Gauge("node_vcpuutil", "VCPU util", ['node'])
         self.vcpu_steal_gauge = Gauge("node_vcpusteal", "VCPU util", ['node'])
@@ -1168,12 +1176,21 @@ class VmTop:
                                 print(vm)
                             nr += 1
                     if self.args.prometheus:
+                        self.vm_vcpu_util_gauge.labels(vm=vm.name).set(vm.vcpu_sum_pc_util)
+                        self.vm_vcpu_steal_gauge.labels(vm=vm.name).set(vm.vcpu_sum_pc_steal)
+                        self.vm_vhost_util_gauge.labels(vm=vm.name).set(vm.vhost_sum_pc_util)
+                        self.vm_vhost_steal_gauge.labels(vm=vm.name).set(vm.vhost_sum_pc_steal)
+                        self.vm_emulators_util_gauge.labels(vm=vm.name).set(vm.emulators_sum_pc_util)
+                        self.vm_emulators_steal_gauge.labels(vm=vm.name).set(vm.emulators_sum_pc_steal)
                         self.vm_mb_read_gauge.labels(vm=vm.name).set(vm.mb_read)
                         self.vm_mb_write_gauge.labels(vm=vm.name).set(vm.mb_write)
                         self.vm_rx_rate_gauge.labels(vm=vm.name).set(vm.rx_rate)
                         self.vm_tx_rate_gauge.labels(vm=vm.name).set(vm.tx_rate)
                         self.vm_rx_rate_dropped_gauge.labels(vm=vm.name).set(vm.rx_rate_dropped)
-                        self.vm_tx_rate_dropped_gauge.labels(vm=vm.name).set(vm.rx_rate_dropped)
+                        self.vm_tx_rate_dropped_gauge.labels(vm=vm.name).set(vm.tx_rate_dropped)
+                        if self.args.vmexit is True:
+                            self.vm_vmexits_gauge.labels(vm=vm.name).set(vm.last_vmexit_diff)
+
                 if self.csv:
                     node.output_node_csv(timestamp)
                 else:
@@ -1214,6 +1231,27 @@ def exit_gracefully(signum, frame):
     global stop
     stop = True
 
+def start_prometheus_client(ip, port):
+    try:
+        from prometheus_client import start_http_server
+        import socket
+        start_http_server(int(port), ip)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ret = s.connect_ex((ip, int(port)))
+        if ret == 0:
+            print("Prometheus listening on %s:%s" %(ip, port))
+        else:
+            print("Prometheus not listening on %s:%s. Please check if the specified port is not in use already" %(ip, port))
+            exit(1)
+
+    except ImportError:
+        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
+        exit(1)
+
+    except Exception as e:
+        print(e)
+        exit(1)
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Monitor local steal')
     parser.add_argument('-r', '--refresh', type=int, default=1,
@@ -1235,7 +1273,7 @@ def parse_args():
     parser.add_argument('--vcpu', action='store_true',
                         help='show vcpu stats (implies --vm)')
     parser.add_argument('--daemon', action='store_true',
-                        help='daemonize vmtop (works with --csv)')
+                        help='daemonize vmtop (works with --csv or --prometheus)')
     parser.add_argument('--no-nic', action='store_true',
                         help='Don\'t collect NIC info')
     parser.add_argument('--csv', type=str,
@@ -1347,24 +1385,23 @@ def main():
     signal.signal(signal.SIGTERM, exit_gracefully)
     signal.signal(signal.SIGINT, exit_gracefully)
 
-    if args.prometheus:
-        try:
-            from prometheus_client import start_http_server
-            host, port = args.prometheus.split(':')
-            start_http_server(int(port), host)
-
-        except ImportError:
-            print("Warning: prometheus_client not found! Please install and re-run or remove --prometheus")
-            exit(1)
+    # Start prometheus
+    # With daemon option, prometheus will be run after
+    # daemonizing below
+    if args.prometheus and not args.daemon:
+            ip, port = args.prometheus.split(':')
+            start_prometheus_client(ip, port)
 
     # Daemonize vmtop if --daemon option specificed
-    # Supported with --csv flag
-    if args.daemon and args.csv is not None:
+    # Supported with --csv and --prometheus flags
+    if args.daemon and args.csv is not None or args.prometheus and args.daemon:
         try:
             import daemon
+
         except ImportError:
             print("Warning: python3-daemon not found! Please install and re-run")
             exit(1)
+
         cwd = os.getcwd()
         with daemon.DaemonContext(stdout=sys.stdout,
             stderr = sys.stdout,
@@ -1373,6 +1410,12 @@ def main():
             signal_map={
             signal.SIGTERM: exit_gracefully
         }):
+            # Daemonizing kills all the previously opened sockets, so
+            # run prometheus after daemonizing
+            if args.prometheus:
+                ip, port = args.prometheus.split(':')
+                start_prometheus_client(ip, port)
+
             s = VmTop(args)
             if args.number > 0:
                 s.run(args.number)

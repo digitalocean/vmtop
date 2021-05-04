@@ -1246,21 +1246,13 @@ def exit_gracefully(signum, frame):
     stop = True
 
 def start_prometheus_client(ip, port):
-    if import_failed_prometheus:
-        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
-        exit(1)
-
-    try:
-        start_http_server(int(port), ip)
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ret = s.connect_ex((ip, int(port)))
-        if ret == 0:
-            print("Prometheus listening on %s:%s" %(ip, port))
-        else:
-            print("Prometheus not listening on %s:%s. Please check if the specified port is not in use already" %(ip, port))
-            exit(1)
-    except Exception as e:
-        print(e)
+    start_http_server(int(port), ip)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ret = s.connect_ex((ip, int(port)))
+    if ret == 0:
+        print("Prometheus listening on %s:%s" %(ip, port))
+    else:
+        print("Prometheus not listening on %s:%s. Please check if the specified port is not in use already" %(ip, port))
         exit(1)
 
 def parse_args():

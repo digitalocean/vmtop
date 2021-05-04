@@ -964,9 +964,6 @@ class Machine:
                 self.del_vm(pid)
 
     def attach_bpf(self):
-        if import_failed_bcc is True:
-            print("Error: missing bcc library")
-            exit(1)
         bpf_text = """
 #include <uapi/linux/ptrace.h>
 BPF_HASH(exitcount, u32, uint32_t);
@@ -1384,6 +1381,18 @@ def parse_args():
             nodes.append(int(n))
         args.node = nodes
 
+    if args.prometheus and import_failed_prometheus:
+        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
+        exit(1)
+
+    if args.daemon and import_failed_daemon:
+        print("Warning: python3-daemon not found! Please install and re-run")
+        exit(1)
+
+    if args.vmexit and import_failed_bcc:
+        print("Error: missing bcc library")
+        exit(1)
+
     return args
 
 
@@ -1406,10 +1415,6 @@ def main():
     # Daemonize vmtop if --daemon option specificed
     # Supported with --csv and --prometheus flags
     if args.daemon and args.csv is not None or args.prometheus and args.daemon:
-        if import_failed_daemon:
-            print("Warning: python3-daemon not found! Please install and re-run")
-            exit(1)
-
         cwd = os.getcwd()
         with daemon.DaemonContext(stdout=sys.stdout,
             stderr = sys.stdout,

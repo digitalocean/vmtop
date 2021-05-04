@@ -93,8 +93,7 @@ class QemuThread:
             fpath = '/proc/%s/comm' % (self.thread_pid)
         else:
             fpath = '/proc/%s/task/%s/comm' % (self.vm_pid, self.thread_pid)
-        with open(fpath, 'r') as f:
-            self.thread_name = f.read().strip()
+        self.thread_name = read_str(fpath)
 
     def get_thread_cpuset(self):
         try:
@@ -139,8 +138,7 @@ class QemuThread:
         else:
             fpath = '/proc/%s/task/%s/schedstat' % (self.vm_pid, self.thread_pid)
         try:
-            with open(fpath, 'r') as f:
-                stats = f.read().split(' ')
+            stats = read_str(fpath).split(' ')
         except FileNotFoundError:
             # On VM teardown return 0
             self.last_cputime = 0
@@ -185,18 +183,10 @@ class NIC:
         self.last_scrape_ts = time.time()
         # Flipped rx/tx to reflect the VM point of view
         try:
-            with open('/sys/devices/virtual/net/%s/statistics/tx_bytes' %
-                      self.name, 'r') as f:
-                self.last_rx = int(f.read().strip())
-            with open('/sys/devices/virtual/net/%s/statistics/rx_bytes' %
-                      self.name, 'r') as f:
-                self.last_tx = int(f.read().strip())
-            with open('/sys/devices/virtual/net/%s/statistics/tx_dropped' %
-                      self.name, 'r') as f:
-                self.last_rx_dropped = int(f.read().strip())
-            with open('/sys/devices/virtual/net/%s/statistics/rx_dropped' %
-                      self.name, 'r') as f:
-                self.last_tx_dropped = int(f.read().strip())
+            self.last_rx = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/tx_bytes')
+            self.last_tx = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/rx_bytes')
+            self.last_rx_dropped = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/tx_dropped')
+            self.last_tx_dropped = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/rx_dropped')
         except:
             # VM Teardown
             self.last_rx = 0

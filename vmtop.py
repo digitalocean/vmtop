@@ -143,9 +143,10 @@ class QemuThread:
             # On VM teardown return 0
             self.last_cputime = 0
             self.last_stealtime = 0
-            return
+            return -1
         self.last_cputime = int(stats[0])
         self.last_stealtime = int(stats[1])
+        return 0
 
     def __repr__(self):
         return "%s (%s), util: %0.02f %%, steal: %0.02f %%" % (
@@ -156,10 +157,16 @@ class QemuThread:
         prev_steal_time = self.last_stealtime
         prev_cpu_time = self.last_cputime
         prev_scrape_ts = self.last_scrape_ts
-        self.get_schedstats()
-        self.diff_ts = self.last_scrape_ts - prev_scrape_ts
-        self.diff_steal = self.last_stealtime - prev_steal_time
-        self.diff_util = self.last_cputime - prev_cpu_time
+        ret = self.get_schedstats()
+        # if a thread vanished, make it 0 and we will remove it
+        # in the VM refresh_stat function
+        if ret == -1:
+            self.diff_steal = 0
+            self.diff_util = 0
+        else:
+            self.diff_ts = self.last_scrape_ts - prev_scrape_ts
+            self.diff_steal = self.last_stealtime - prev_steal_time
+            self.diff_util = self.last_cputime - prev_cpu_time
         if self.diff_ts < 0 or self.diff_steal < 0 or self.diff_util < 0:
             print(f"Error: negative difference in thread {self.thread_pid}, "
                   f"VM {self.vm_pid}\n"

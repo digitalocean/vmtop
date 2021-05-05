@@ -160,6 +160,18 @@ class QemuThread:
         self.diff_ts = self.last_scrape_ts - prev_scrape_ts
         self.diff_steal = self.last_stealtime - prev_steal_time
         self.diff_util = self.last_cputime - prev_cpu_time
+        if self.diff_ts < 0 or self.diff_steal < 0 or self.diff_util < 0:
+            print(f"Error: negative difference in thread {self.thread_pid}, "
+                  f"VM {self.vm_pid}\n"
+                  f"self.diff_ts: {self.diff_ts}\n"
+                  f"self.last_scrape_ts: {self.last_scrape_ts}\n"
+                  f"prev_scrape_ts: {prev_scrape_ts}\n"
+                  f"self.diff_steal: {self.diff_steal}\n"
+                  f"self.last_scrape_steal: {self.last_stealtime}\n"
+                  f"prev_scrape_steal: {prev_steal_time}\n"
+                  f"self.diff_util: {self.diff_util}\n"
+                  f"self.last_scrape_util: {self.last_cputime}\n"
+                  f"prev_scrape_util: {prev_cpu_time}")
         self.pc_util = self.diff_util / self.diff_ts * 100
         self.pc_steal = self.diff_steal / self.diff_ts * 100
 

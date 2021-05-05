@@ -181,6 +181,7 @@ class QemuThread:
                   f"prev_scrape_util: {prev_cpu_time}")
         self.pc_util = self.diff_util / self.diff_ts * 100
         self.pc_steal = self.diff_steal / self.diff_ts * 100
+        return ret
 
 
 class NIC:
@@ -564,17 +565,15 @@ class VM:
         # emulators
         to_remove = []
         for emulator in self.emulator_threads.values():
-            try:
-                emulator.refresh_stats()
-            except Exception:
+            ret = emulator.refresh_stats()
+            if ret == -1:
                 to_remove.append(emulator)
                 continue
             self.emulators_sum_pc_util += emulator.pc_util
             self.emulators_sum_pc_steal += emulator.pc_steal
         # workers are added/removed on demand, so we can't keep track of all
-        # FIXME
-#        for r in to_remove:
-#            del emulators
+        for r in to_remove:
+            del emulators
 
         # disk
         prev_io_scrape_ts = self.last_io_scrape_ts

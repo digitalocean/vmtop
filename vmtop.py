@@ -161,8 +161,7 @@ class QemuThread:
         # if a thread vanished, make it 0 and we will remove it
         # in the VM refresh_stat function
         if ret == -1:
-            self.diff_steal = 0
-            self.diff_util = 0
+            return ret
         else:
             self.diff_ts = self.last_scrape_ts - prev_scrape_ts
             self.diff_steal = self.last_stealtime - prev_steal_time
@@ -564,16 +563,16 @@ class VM:
 
         # emulators
         to_remove = []
-        for emulator in self.emulator_threads.values():
+        for tid, emulator in self.emulator_threads.items():
             ret = emulator.refresh_stats()
             if ret == -1:
-                to_remove.append(emulator)
+                to_remove.append(tid)
                 continue
             self.emulators_sum_pc_util += emulator.pc_util
             self.emulators_sum_pc_steal += emulator.pc_steal
         # workers are added/removed on demand, so we can't keep track of all
-        for r in to_remove:
-            del emulators
+        for tid in to_remove:
+            del self.emulator_threads[tid]
 
         # disk
         prev_io_scrape_ts = self.last_io_scrape_ts

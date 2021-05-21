@@ -95,12 +95,24 @@ class QemuThread:
             fpath = '/proc/%s/task/%s/comm' % (self.vm_pid, self.thread_pid)
         self.thread_name = read_str(fpath)
 
+    def get_prctl_cpus(self):
+        status = read_str('/proc/%s/task/%s/status' % (self.vm_pid, self.thread_pid)).split('\n')
+        for l in status:
+            k = l.split(':')[0]
+            v = l.split(':')[1]
+            if k == 'Cpus_allowed_list':
+                cpus = mixrange(v.strip())
+        self.nodes = self.machine.get_prctl_nodes(cpus)
+
     def get_thread_cpuset(self):
         try:
             if self.vhost is not True:
                 fpath = '/proc/%s/task/%s/cpuset' % (self.vm_pid, self.thread_pid)
             with open(fpath, 'r') as f:
                 line = f.read().strip()
+                # if no cpuset, try to read the Cpus_allowed_list
+                if line == '/':
+                    return self.get_prctl_cpus()
                 # Cgroup1
                 if self.cgroup != 2:
                     self.cpuset = line
@@ -452,6 +464,13 @@ class VM:
                     if len(l) ==2 and l[0] == 'iff:':
                         self.nics[l[1]] = NIC(self, l[1])
 
+    def is_vcpu(self, thread, comm):
+        if 'CPU' in comm:
+            return True
+        # hack for LXD-managed VMs
+        if len(thread.nodes) == 1:
+            return True
+
     def get_threads(self):
         for tid in os.listdir('/proc/%s/task/' % self.vm_pid):
             fname = '/proc/%s/task/%s/comm' % (self.vm_pid, tid)
@@ -463,7 +482,7 @@ class VM:
             except FileNotFoundError:
                 # Ignore threads that disappear for now (temporary workers)
                 continue
-            if 'CPU' in comm:
+            if self.is_vcpu(thread, comm):
                 self.vcpu_threads[tid] = thread
             else:
                 self.emulator_threads[tid] = thread
@@ -884,6 +903,16 @@ class Machine:
     def print_node_count(self, node_id):
         node = self.nodes[node_id]
         node.output_allocation()
+
+    def get_prctl_nodes(self, cpus):
+        nodes = []
+        for c in cpus:
+            for n in self.nodes.values():
+                if c in n.hwthread_list:
+                    if n not in nodes:
+                        nodes.append(n)
+                    break
+        return nodes
 
     def get_nodes(self, cpuset):
         nodes = []

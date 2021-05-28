@@ -819,7 +819,7 @@ class Machine:
 
             # Avoid scenrio where m is empty
             if m:
-                if m[0] == 'cgroup':
+                if m[0] == 'cgroup' or m[0] == 'cgroup2':
                     if 'unified' in m[1]:
                         continue
                     if 'cpuset' in m[3]:

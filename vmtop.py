@@ -467,9 +467,6 @@ class VM:
     def is_vcpu(self, thread, comm):
         if 'CPU' in comm:
             return True
-        # hack for LXD-managed VMs
-        if len(thread.nodes) == 1:
-            return True
 
     def get_threads(self):
         for tid in os.listdir('/proc/%s/task/' % self.vm_pid):

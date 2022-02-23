@@ -1396,8 +1396,8 @@ def parse_args():
                        'emulators_sum_pc_steal': ['emu', 'steal%', '8s'],
                        'mb_read': ['disk', 'rd MB/s', '8s'],
                        'mb_write': ['disk', 'wr MB/s', '8s'],
-                       'rx_rate': ['rx', 'MBps', '8s'],
-                       'tx_rate': ['tx', 'MBps', '8s'],
+                       'rx_rate': ['rx', 'Mbps', '8s'],
+                       'tx_rate': ['tx', 'Mbps', '8s'],
                        'rx_rate_dropped': ['rx_drop', 'pkt/s', '8s'],
                        'tx_rate_dropped': ['tx_drop', 'pkt/s', '9s'],
                        'last_vmexit_diff': ['vmexit', 'count', '8s']}

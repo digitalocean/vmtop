@@ -416,7 +416,7 @@ class VM:
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
         self.csv = open(fname, 'w')
-        self.csv.write("timestamp,pid,name,mem_node,vcpu_node,vcpu_util,vcpu_steal,emulators_util,"
+        self.csv.write("timestamp,pid,name,nr_vcpus,mem_node,vcpu_node,vcpu_util,vcpu_steal,emulators_util,"
                 "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx,"
                 "rx_dropped,tx_dropped,vmexit_count\n")
 
@@ -426,6 +426,7 @@ class VM:
         # while...
         self.csv.write(f"{datetime.fromtimestamp(timestamp)},"
                        f"{self.vm_pid},{self.name},"
+                       f"{self.nr_vcpus},"
                        f"{self.mem_primary_node.id},"
                        f"{self.vcpu_primary_node.id},"
                        f"{'%0.02f' % (abs(self.vcpu_sum_pc_util))},"

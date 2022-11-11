@@ -1272,8 +1272,13 @@ class VmTop:
                     self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_util)
                     self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_steal)
 
+        self.wait_refresh()
 
-        time.sleep(self.args.refresh)
+    def wait_refresh(self):
+        for i in range(self.args.refresh * 2):
+            if stop is True:
+                return
+            time.sleep(0.5)
 
     def loop(self):
         while stop == False:
@@ -1462,6 +1467,7 @@ def main():
                 start_prometheus_client(ip, port)
 
             s = VmTop(args)
+            s.wait_refresh()
             if args.number > 0:
                 s.run(args.number)
             else:
@@ -1469,6 +1475,7 @@ def main():
 
     else:
         s = VmTop(args)
+        s.wait_refresh()
 
         if args.number > 0:
             s.run(args.number)

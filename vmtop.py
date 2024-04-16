@@ -535,6 +535,11 @@ class VM:
                 self.last_io_write_bytes = int(l[1])
 
     def get_node_memory(self):
+        path = shutil.which("numastat")
+        if path is None:
+            print("no executable found for numastat")
+            return
+
         cmd = ["numastat", "-p", str(self.vm_pid)]
         try:
             usage = subprocess.check_output(

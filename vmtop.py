@@ -49,18 +49,21 @@ except ImportError:
 
 stop = False
 
+
 def read_str(filename):
-    with open(filename, 'r') as fd:
+    with open(filename, "r") as fd:
         return fd.read().strip()
+
 
 def read_int(filename):
     return int(read_str(filename))
+
 
 def mixrange(s):
     r = []
     if not s:
         return r
-    if s == '\n':
+    if s == "\n":
         return r
 
     for i in s.split(","):
@@ -95,28 +98,30 @@ class QemuThread:
 
     def get_thread_name(self):
         if self.vhost is True:
-            fpath = '/proc/%s/comm' % (self.thread_pid)
+            fpath = "/proc/%s/comm" % (self.thread_pid)
         else:
-            fpath = '/proc/%s/task/%s/comm' % (self.vm_pid, self.thread_pid)
+            fpath = "/proc/%s/task/%s/comm" % (self.vm_pid, self.thread_pid)
         self.thread_name = read_str(fpath)
 
     def get_prctl_cpus(self):
-        status = read_str('/proc/%s/task/%s/status' % (self.vm_pid, self.thread_pid)).split('\n')
+        status = read_str(
+            "/proc/%s/task/%s/status" % (self.vm_pid, self.thread_pid)
+        ).split("\n")
         for l in status:
-            k = l.split(':')[0]
-            v = l.split(':')[1]
-            if k == 'Cpus_allowed_list':
+            k = l.split(":")[0]
+            v = l.split(":")[1]
+            if k == "Cpus_allowed_list":
                 cpus = mixrange(v.strip())
         self.nodes = self.machine.get_prctl_nodes(cpus)
 
     def get_thread_cpuset(self):
         try:
             if self.vhost is not True:
-                fpath = '/proc/%s/task/%s/cpuset' % (self.vm_pid, self.thread_pid)
-            with open(fpath, 'r') as f:
+                fpath = "/proc/%s/task/%s/cpuset" % (self.vm_pid, self.thread_pid)
+            with open(fpath, "r") as f:
                 line = f.read().strip()
                 # if no cpuset, try to read the Cpus_allowed_list
-                if line == '/':
+                if line == "/":
                     return self.get_prctl_cpus()
                 # Cgroup1
                 if self.cgroup != 2:
@@ -139,23 +144,24 @@ class QemuThread:
         if len(self.nodes) != 1:
             # kvm-pit is not pinned, but also mostly idle, no need to
             # warn here
-            if 'kvm-pit' in self.thread_name:
+            if "kvm-pit" in self.thread_name:
                 return
             if self.warned is True:
                 return
-            print("Warning: thread %d from VM %d belongs to multiple nodes, "
-                  "node accounting may be inaccurate" % (self.thread_pid,
-                      self.vm_pid))
+            print(
+                "Warning: thread %d from VM %d belongs to multiple nodes, "
+                "node accounting may be inaccurate" % (self.thread_pid, self.vm_pid)
+            )
             self.warned = True
 
     def get_schedstats(self):
         self.last_scrape_ts = time.time() * 1000000000
         if self.vhost is True:
-            fpath = '/proc/%s/schedstat' % (self.thread_pid)
+            fpath = "/proc/%s/schedstat" % (self.thread_pid)
         else:
-            fpath = '/proc/%s/task/%s/schedstat' % (self.vm_pid, self.thread_pid)
+            fpath = "/proc/%s/task/%s/schedstat" % (self.vm_pid, self.thread_pid)
         try:
-            stats = read_str(fpath).split(' ')
+            stats = read_str(fpath).split(" ")
         except FileNotFoundError:
             # On VM teardown return 0
             self.last_cputime = 0
@@ -167,8 +173,11 @@ class QemuThread:
 
     def __repr__(self):
         return "%s (%s), util: %0.02f %%, steal: %0.02f %%" % (
-                self.thread_name, self.thread_pid, self.pc_util,
-                self.pc_steal)
+            self.thread_name,
+            self.thread_pid,
+            self.pc_util,
+            self.pc_steal,
+        )
 
     def refresh_stats(self):
         prev_steal_time = self.last_stealtime
@@ -184,17 +193,19 @@ class QemuThread:
             self.diff_steal = self.last_stealtime - prev_steal_time
             self.diff_util = self.last_cputime - prev_cpu_time
         if self.diff_ts < 0 or self.diff_steal < 0 or self.diff_util < 0:
-            print(f"Error: negative difference in thread {self.thread_pid}, "
-                  f"VM {self.vm_pid}\n"
-                  f"self.diff_ts: {self.diff_ts}\n"
-                  f"self.last_scrape_ts: {self.last_scrape_ts}\n"
-                  f"prev_scrape_ts: {prev_scrape_ts}\n"
-                  f"self.diff_steal: {self.diff_steal}\n"
-                  f"self.last_scrape_steal: {self.last_stealtime}\n"
-                  f"prev_scrape_steal: {prev_steal_time}\n"
-                  f"self.diff_util: {self.diff_util}\n"
-                  f"self.last_scrape_util: {self.last_cputime}\n"
-                  f"prev_scrape_util: {prev_cpu_time}")
+            print(
+                f"Error: negative difference in thread {self.thread_pid}, "
+                f"VM {self.vm_pid}\n"
+                f"self.diff_ts: {self.diff_ts}\n"
+                f"self.last_scrape_ts: {self.last_scrape_ts}\n"
+                f"prev_scrape_ts: {prev_scrape_ts}\n"
+                f"self.diff_steal: {self.diff_steal}\n"
+                f"self.last_scrape_steal: {self.last_stealtime}\n"
+                f"prev_scrape_steal: {prev_steal_time}\n"
+                f"self.diff_util: {self.diff_util}\n"
+                f"self.last_scrape_util: {self.last_cputime}\n"
+                f"prev_scrape_util: {prev_cpu_time}"
+            )
         self.pc_util = self.diff_util / self.diff_ts * 100
         self.pc_steal = self.diff_steal / self.diff_ts * 100
         return ret
@@ -219,10 +230,18 @@ class NIC:
         self.last_scrape_ts = time.time()
         # Flipped rx/tx to reflect the VM point of view
         try:
-            self.last_rx = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/tx_bytes')
-            self.last_tx = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/rx_bytes')
-            self.last_rx_dropped = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/tx_dropped')
-            self.last_tx_dropped = read_int(f'/sys/devices/virtual/net/{self.name}/statistics/rx_dropped')
+            self.last_rx = read_int(
+                f"/sys/devices/virtual/net/{self.name}/statistics/tx_bytes"
+            )
+            self.last_tx = read_int(
+                f"/sys/devices/virtual/net/{self.name}/statistics/rx_bytes"
+            )
+            self.last_rx_dropped = read_int(
+                f"/sys/devices/virtual/net/{self.name}/statistics/tx_dropped"
+            )
+            self.last_tx_dropped = read_int(
+                f"/sys/devices/virtual/net/{self.name}/statistics/rx_dropped"
+            )
         except:
             # VM Teardown
             self.last_rx = 0
@@ -336,8 +355,10 @@ class VM:
             elif vcpu.nodes[0] != tmp_primary:
                 self.set_vcpu_primary_node(self.mem_primary_node)
                 if self.warned_vcpu_split is False:
-                    print(f"Warning: VM {self.name} has vcpus pinned to "
-                          f"different nodes, accounting will not be accurate")
+                    print(
+                        f"Warning: VM {self.name} has vcpus pinned to "
+                        f"different nodes, accounting will not be accurate"
+                    )
                     self.warned_vcpu_split = True
                 break
         self.set_vcpu_primary_node(tmp_primary)
@@ -354,9 +375,11 @@ class VM:
             return
         for vcpu in self.vcpu_threads.values():
             if len(vcpu.nodes) == 1 and vcpu.nodes[0] != self.mem_primary_node:
-                print(f"Warning: VCPU thread {vcpu.thread_pid} from VM "
-                      f"{self.name} is not pinned on the same node as its "
-                      f"memory")
+                print(
+                    f"Warning: VCPU thread {vcpu.thread_pid} from VM "
+                    f"{self.name} is not pinned on the same node as its "
+                    f"memory"
+                )
                 self.warned_vcpu_mem_split = True
 
     def get_exit_count(self):
@@ -371,16 +394,21 @@ class VM:
 
     def __str__(self):
         if self.args.vcpu:
-            vm = "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, " \
-                    "vhost util: %0.02f%%, vhost steal: %0.02f%%" \
-                 "emulators util: %0.02f%%, emulators steal: %0.02f%%" % (
-                    self.name, self.vm_pid,
+            vm = (
+                "  - %s (%s), vcpu util: %0.02f%%, vcpu steal: %0.02f%%, "
+                "vhost util: %0.02f%%, vhost steal: %0.02f%%"
+                "emulators util: %0.02f%%, emulators steal: %0.02f%%"
+                % (
+                    self.name,
+                    self.vm_pid,
                     self.vcpu_sum_pc_util,
                     self.vcpu_sum_pc_steal,
                     self.vhost_sum_pc_util,
                     self.vhost_sum_pc_steal,
                     self.emulators_sum_pc_util,
-                    self.emulators_sum_pc_steal)
+                    self.emulators_sum_pc_steal,
+                )
+            )
             vcpu_util = ""
             for v in self.vcpu_threads.values():
                 vcpu_util = "%s\n    - %s" % (vcpu_util, v)
@@ -392,95 +420,99 @@ class VM:
         else:
             metrics = [self.name, str(self.vm_pid)]
             for i in self.args.display_metrics:
-                if i == 'vcpu_sum_pc_util':
-                    metrics.append('%0.02f' % self.vcpu_sum_pc_util)
-                elif i == 'vcpu_sum_pc_steal':
-                    metrics.append('%0.02f' % self.vcpu_sum_pc_steal)
-                elif i == 'emulators_sum_pc_util':
-                    metrics.append('%0.02f' % self.emulators_sum_pc_util)
-                elif i == 'emulators_sum_pc_steal':
-                    metrics.append('%0.02f' % self.emulators_sum_pc_steal)
-                elif i == 'vhost_sum_pc_util':
-                    metrics.append('%0.02f' % self.vhost_sum_pc_util)
-                elif i == 'vhost_sum_pc_steal':
-                    metrics.append('%0.02f' % self.vhost_sum_pc_steal)
-                elif i == 'mb_read':
-                    metrics.append('%0.02f' % self.mb_read)
-                elif i == 'mb_write':
-                    metrics.append('%0.02f' % self.mb_write)
-                elif i == 'rx_rate':
-                    metrics.append('%0.02f' % self.rx_rate)
-                elif i == 'tx_rate':
-                    metrics.append('%0.02f' % self.tx_rate)
-                elif i == 'rx_rate_dropped':
-                    metrics.append('%0.02f' % self.rx_rate_dropped)
-                elif i == 'tx_rate_dropped':
-                    metrics.append('%0.02f' % self.tx_rate_dropped)
-                elif i == 'last_vmexit_diff':
-                    metrics.append('%d' % self.last_vmexit_diff)
+                if i == "vcpu_sum_pc_util":
+                    metrics.append("%0.02f" % self.vcpu_sum_pc_util)
+                elif i == "vcpu_sum_pc_steal":
+                    metrics.append("%0.02f" % self.vcpu_sum_pc_steal)
+                elif i == "emulators_sum_pc_util":
+                    metrics.append("%0.02f" % self.emulators_sum_pc_util)
+                elif i == "emulators_sum_pc_steal":
+                    metrics.append("%0.02f" % self.emulators_sum_pc_steal)
+                elif i == "vhost_sum_pc_util":
+                    metrics.append("%0.02f" % self.vhost_sum_pc_util)
+                elif i == "vhost_sum_pc_steal":
+                    metrics.append("%0.02f" % self.vhost_sum_pc_steal)
+                elif i == "mb_read":
+                    metrics.append("%0.02f" % self.mb_read)
+                elif i == "mb_write":
+                    metrics.append("%0.02f" % self.mb_write)
+                elif i == "rx_rate":
+                    metrics.append("%0.02f" % self.rx_rate)
+                elif i == "tx_rate":
+                    metrics.append("%0.02f" % self.tx_rate)
+                elif i == "rx_rate_dropped":
+                    metrics.append("%0.02f" % self.rx_rate_dropped)
+                elif i == "tx_rate_dropped":
+                    metrics.append("%0.02f" % self.tx_rate_dropped)
+                elif i == "last_vmexit_diff":
+                    metrics.append("%d" % self.last_vmexit_diff)
             return self.args.vm_format.format(*metrics)
 
     def open_vm_csv(self):
         fname = os.path.join(self.args.csv, "%s.csv" % self.name)
-        self.csv = open(fname, 'w')
-        self.csv.write("timestamp,pid,name,nr_vcpus,mem_node,vcpu_node,vcpu_util,vcpu_steal,emulators_util,"
-                "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx,"
-                "rx_dropped,tx_dropped,vmexit_count\n")
+        self.csv = open(fname, "w")
+        self.csv.write(
+            "timestamp,pid,name,nr_vcpus,mem_node,vcpu_node,vcpu_util,vcpu_steal,emulators_util,"
+            "emulators_steal,vhost_util,vhost_steal,disk_read,disk_write,rx,tx,"
+            "rx_dropped,tx_dropped,vmexit_count\n"
+        )
 
     def output_vm_csv(self, timestamp):
         # Output the CSV file
         # we use abs() because Python manages to write -0.00 once in a
         # while...
-        self.csv.write(f"{datetime.fromtimestamp(timestamp)},"
-                       f"{self.vm_pid},{self.name},"
-                       f"{self.nr_vcpus},"
-                       f"{self.mem_primary_node.id},"
-                       f"{self.vcpu_primary_node.id},"
-                       f"{'%0.02f' % (abs(self.vcpu_sum_pc_util))},"
-                       f"{'%0.02f' % (abs(self.vcpu_sum_pc_steal))},"
-                       f"{'%0.02f' % (abs(self.emulators_sum_pc_util))},"
-                       f"{'%0.02f' % (abs(self.emulators_sum_pc_steal))},"
-                       f"{'%0.02f' % (abs(self.vhost_sum_pc_util))},"
-                       f"{'%0.02f' % (abs(self.vhost_sum_pc_steal))},"
-                       f"{'%0.02f' % (abs(self.mb_read))},"
-                       f"{'%0.02f' % (abs(self.mb_write))},"
-                       f"{'%0.02f' % (abs(self.rx_rate))},"
-                       f"{'%0.02f' % (abs(self.tx_rate))},"
-                       f"{'%0.02f' % (abs(self.rx_rate_dropped))},"
-                       f"{'%0.02f' % (abs(self.tx_rate_dropped))},"
-                       f"{'%d' % (self.last_vmexit_diff)}\n")
+        self.csv.write(
+            f"{datetime.fromtimestamp(timestamp)},"
+            f"{self.vm_pid},{self.name},"
+            f"{self.nr_vcpus},"
+            f"{self.mem_primary_node.id},"
+            f"{self.vcpu_primary_node.id},"
+            f"{'%0.02f' % (abs(self.vcpu_sum_pc_util))},"
+            f"{'%0.02f' % (abs(self.vcpu_sum_pc_steal))},"
+            f"{'%0.02f' % (abs(self.emulators_sum_pc_util))},"
+            f"{'%0.02f' % (abs(self.emulators_sum_pc_steal))},"
+            f"{'%0.02f' % (abs(self.vhost_sum_pc_util))},"
+            f"{'%0.02f' % (abs(self.vhost_sum_pc_steal))},"
+            f"{'%0.02f' % (abs(self.mb_read))},"
+            f"{'%0.02f' % (abs(self.mb_write))},"
+            f"{'%0.02f' % (abs(self.rx_rate))},"
+            f"{'%0.02f' % (abs(self.tx_rate))},"
+            f"{'%0.02f' % (abs(self.rx_rate_dropped))},"
+            f"{'%0.02f' % (abs(self.tx_rate_dropped))},"
+            f"{'%d' % (self.last_vmexit_diff)}\n"
+        )
         self.csv.flush()
 
     def get_nic_info(self):
-        for fd in os.listdir(f'/proc/{self.vm_pid}/fd/'):
-            lname = f'/proc/{self.vm_pid}/fd/{fd}'
+        for fd in os.listdir(f"/proc/{self.vm_pid}/fd/"):
+            lname = f"/proc/{self.vm_pid}/fd/{fd}"
             try:
                 link = os.readlink(lname)
             except OSError:
                 continue
 
-            if link == '/dev/net/tun':
+            if link == "/dev/net/tun":
                 try:
-                    with open(f'/proc/{self.vm_pid}/fdinfo/{fd}', 'r') as _f:
-                        fdinfo = _f.read().split('\n')
+                    with open(f"/proc/{self.vm_pid}/fdinfo/{fd}", "r") as _f:
+                        fdinfo = _f.read().split("\n")
                 except FileNotFoundError:
                     # Ignore fd that vanished
                     continue
 
                 for l in fdinfo:
                     l = l.split()
-                    if len(l) ==2 and l[0] == 'iff:':
+                    if len(l) == 2 and l[0] == "iff:":
                         self.nics[l[1]] = NIC(self, l[1])
 
     def is_vcpu(self, thread, comm):
-        if 'CPU' in comm:
+        if "CPU" in comm:
             return True
 
     def get_threads(self):
-        for tid in os.listdir('/proc/%s/task/' % self.vm_pid):
-            fname = '/proc/%s/task/%s/comm' % (self.vm_pid, tid)
+        for tid in os.listdir("/proc/%s/task/" % self.vm_pid):
+            fname = "/proc/%s/task/%s/comm" % (self.vm_pid, tid)
             try:
-                with open(fname, 'r') as _f:
+                with open(fname, "r") as _f:
                     comm = _f.read()
                 tid = int(tid)
                 thread = QemuThread(self.vm_pid, self.machine.cgroup, tid, self.machine)
@@ -494,25 +526,31 @@ class VM:
 
         # Find vhost threads
         cmd = ["pgrep", str(self.vm_pid)]
-        pids = subprocess.check_output(
-                cmd, shell=False).strip().decode("utf-8").split('\n')
+        pids = (
+            subprocess.check_output(cmd, shell=False)
+            .strip()
+            .decode("utf-8")
+            .split("\n")
+        )
         for p in pids:
             tid = int(p)
-            thread = QemuThread(self.vm_pid, self.machine.cgroup, tid, self.machine, vhost=True)
+            thread = QemuThread(
+                self.vm_pid, self.machine.cgroup, tid, self.machine, vhost=True
+            )
             self.vhost_threads[tid] = thread
 
     def get_vm_info(self):
-        with open('/proc/%s/cmdline' % self.vm_pid, mode='r') as fh:
-            cmdline = fh.read().split('\0')
+        with open("/proc/%s/cmdline" % self.vm_pid, mode="r") as fh:
+            cmdline = fh.read().split("\0")
         for i in range(len(cmdline)):
-            if cmdline[i].startswith('guest='):
-                self.name = cmdline[i].split('=')[1].split(',')[0]
-            elif cmdline[i].startswith('-name'):
-                self.name = cmdline[i+1]
-            elif cmdline[i] == '-m':
-                self.mem_allocated = int(cmdline[i+1])
-            elif cmdline[i] == '-smp':
-                self.total_vcpu_count = int(cmdline[i+1].split(',')[0])
+            if cmdline[i].startswith("guest="):
+                self.name = cmdline[i].split("=")[1].split(",")[0]
+            elif cmdline[i].startswith("-name"):
+                self.name = cmdline[i + 1]
+            elif cmdline[i] == "-m":
+                self.mem_allocated = int(cmdline[i + 1])
+            elif cmdline[i] == "-smp":
+                self.total_vcpu_count = int(cmdline[i + 1].split(",")[0])
 
         if self.name is None:
             print("Failed to parse guest name")
@@ -521,8 +559,8 @@ class VM:
     def refresh_io_stats(self):
         self.last_io_scrape_ts = time.time()
         try:
-            with open('/proc/%s/io' % self.vm_pid, 'r') as f:
-                stats = f.read().split('\n')
+            with open("/proc/%s/io" % self.vm_pid, "r") as f:
+                stats = f.read().split("\n")
         except FileNotFoundError:
             # On VM teardown return 0
             self.last_io_read_bytes = 0
@@ -530,10 +568,10 @@ class VM:
             return
 
         for l in stats:
-            l = l.split(' ')
-            if l[0] == 'read_bytes:':
+            l = l.split(" ")
+            if l[0] == "read_bytes:":
                 self.last_io_read_bytes = int(l[1])
-            if l[0] == 'write_bytes:':
+            if l[0] == "write_bytes:":
                 self.last_io_write_bytes = int(l[1])
 
     def get_node_memory(self):
@@ -544,9 +582,12 @@ class VM:
 
         cmd = ["numastat", "-p", str(self.vm_pid)]
         try:
-            usage = subprocess.check_output(
-                    cmd,
-                    shell=False).decode("utf-8").split('\n')[-2].split()[1:-1]
+            usage = (
+                subprocess.check_output(cmd, shell=False)
+                .decode("utf-8")
+                .split("\n")[-2]
+                .split()[1:-1]
+            )
         except subprocess.CalledProcessError:
             # ctrl-c
             return
@@ -609,7 +650,7 @@ class VM:
         prev_io_write_bytes = self.last_io_write_bytes
         self.refresh_io_stats()
         diff_sec = self.last_io_scrape_ts - prev_io_scrape_ts
-        mb = 1024.0*1024.0
+        mb = 1024.0 * 1024.0
         self.mb_read = (self.last_io_read_bytes - prev_io_read_bytes) / diff_sec / mb
         self.mb_write = (self.last_io_write_bytes - prev_io_write_bytes) / diff_sec / mb
 
@@ -631,7 +672,9 @@ class VM:
         self.vcpu_primary_node.node_vhost_sum_pc_util += self.vhost_sum_pc_util
         self.vcpu_primary_node.node_vhost_sum_pc_steal += self.vhost_sum_pc_steal
         self.vcpu_primary_node.node_emulators_sum_pc_util += self.emulators_sum_pc_util
-        self.vcpu_primary_node.node_emulators_sum_pc_steal += self.emulators_sum_pc_steal
+        self.vcpu_primary_node.node_emulators_sum_pc_steal += (
+            self.emulators_sum_pc_steal
+        )
 
         self.get_exit_count()
 
@@ -675,32 +718,38 @@ class Node:
     def print_node_initial_count(self):
         if self.args.csv is not None:
             return
-        return("%s VMs (%s vcpus, %0.02f GB mem allocated, "
-              "%0.02f GB mem used)" % (
-                self.nr_vms, self.node_vcpu_threads,
-                self.vm_mem_allocated/1024, self.vm_mem_used/1024))
+        return "%s VMs (%s vcpus, %0.02f GB mem allocated, " "%0.02f GB mem used)" % (
+            self.nr_vms,
+            self.node_vcpu_threads,
+            self.vm_mem_allocated / 1024,
+            self.vm_mem_used / 1024,
+        )
 
     def open_csv_file(self):
-        fname = os.path.join(self.args.csv, 'node%d.csv' % self.id)
+        fname = os.path.join(self.args.csv, "node%d.csv" % self.id)
         print("Writing node %s data in %s" % (self.id, fname))
-        self.node_csv = open(fname, 'w')
-        self.node_csv.write("timestamp,id,nr_vms,nr_vcpus,vm_mem_allocated,"
-                            "vm_mem_used,vcpu_util,vcpu_steal,emulators_util,"
-                            "emulators_steal,vhost_util,vhost_steal\n")
+        self.node_csv = open(fname, "w")
+        self.node_csv.write(
+            "timestamp,id,nr_vms,nr_vcpus,vm_mem_allocated,"
+            "vm_mem_used,vcpu_util,vcpu_steal,emulators_util,"
+            "emulators_steal,vhost_util,vhost_steal\n"
+        )
 
     def output_node_csv(self, timestamp):
-        self.node_csv.write(f"{datetime.fromtimestamp(timestamp)},"
-                            f"{self.id},"
-                            f"{self.nr_vms},"
-                            f"{self.node_vcpu_threads},"
-                            f"{self.vm_mem_allocated/1024},"
-                            f"{self.vm_mem_used/1024},"
-                            f"{'%0.02f' % (self.node_vcpu_sum_pc_util)},"
-                            f"{'%0.02f' % (self.node_vcpu_sum_pc_steal)},"
-                            f"{'%0.02f' % (self.node_emulators_sum_pc_util)},"
-                            f"{'%0.02f' % (self.node_emulators_sum_pc_steal)},"
-                            f"{'%0.02f' % (self.node_vhost_sum_pc_util)},"
-                            f"{'%0.02f' % (self.node_vhost_sum_pc_steal)}\n")
+        self.node_csv.write(
+            f"{datetime.fromtimestamp(timestamp)},"
+            f"{self.id},"
+            f"{self.nr_vms},"
+            f"{self.node_vcpu_threads},"
+            f"{self.vm_mem_allocated/1024},"
+            f"{self.vm_mem_used/1024},"
+            f"{'%0.02f' % (self.node_vcpu_sum_pc_util)},"
+            f"{'%0.02f' % (self.node_vcpu_sum_pc_steal)},"
+            f"{'%0.02f' % (self.node_emulators_sum_pc_util)},"
+            f"{'%0.02f' % (self.node_emulators_sum_pc_steal)},"
+            f"{'%0.02f' % (self.node_vhost_sum_pc_util)},"
+            f"{'%0.02f' % (self.node_vhost_sum_pc_steal)}\n"
+        )
         self.node_csv.flush()
 
     def output_allocation(self):
@@ -708,16 +757,16 @@ class Node:
 
     # -1 when no numa nodes
     def node_list():
-        if os.path.exists('/sys/devices/system/node/online'):
-            return mixrange(read_str('/sys/devices/system/node/online'))
+        if os.path.exists("/sys/devices/system/node/online"):
+            return mixrange(read_str("/sys/devices/system/node/online"))
         else:
             return [-1]
 
     def node_hwthreads(node_n):
         if node_n == -1:
-            return mixrange(read_str('/sys/devices/system/cpu/online'))
+            return mixrange(read_str("/sys/devices/system/cpu/online"))
         else:
-            return mixrange(read_str(f'/sys/devices/system/node/node{node_n}/cpulist'))
+            return mixrange(read_str(f"/sys/devices/system/node/node{node_n}/cpulist"))
 
     @property
     def nr_vms(self):
@@ -773,35 +822,41 @@ class Machine:
         self.pc_guest = (self.last_cpu_guest - prev_guest) / diff
 
     def __repr__(self):
-        return (f"Host CPU: user: {'%0.02f%%' % self.pc_user}, "
-              f"nice: {'%0.02f%%' % self.pc_nice}, "
-              f"system: {'%0.02f%%' % self.pc_system}, "
-              f"idle: {'%0.02f%%' % self.pc_idle}, "
-              f"iowait: {'%0.02f%%' % self.pc_iowait}, "
-              f"irq: {'%0.02f%%' % self.pc_irq}, "
-              f"guest: {'%0.02f%%' % self.pc_guest}")
+        return (
+            f"Host CPU: user: {'%0.02f%%' % self.pc_user}, "
+            f"nice: {'%0.02f%%' % self.pc_nice}, "
+            f"system: {'%0.02f%%' % self.pc_system}, "
+            f"idle: {'%0.02f%%' % self.pc_idle}, "
+            f"iowait: {'%0.02f%%' % self.pc_iowait}, "
+            f"irq: {'%0.02f%%' % self.pc_irq}, "
+            f"guest: {'%0.02f%%' % self.pc_guest}"
+        )
 
     def open_csv_file(self):
-        fname = os.path.join(self.args.csv, 'host.csv')
+        fname = os.path.join(self.args.csv, "host.csv")
         print("Writing host data in %s" % (fname))
-        self.machine_csv = open(fname, 'w')
-        self.machine_csv.write("timestamp,cpu_user,cpu_nice,cpu_system,"
-                               "cpu_idle,cpu_iowait,cpu_irq,cpu_guest\n")
+        self.machine_csv = open(fname, "w")
+        self.machine_csv.write(
+            "timestamp,cpu_user,cpu_nice,cpu_system,"
+            "cpu_idle,cpu_iowait,cpu_irq,cpu_guest\n"
+        )
         self.machine_csv.flush()
 
     def output_machine_csv(self, timestamp):
-        self.machine_csv.write(f"{datetime.fromtimestamp(timestamp)},"
-                            f"{'%0.02f' % self.pc_user},"
-                            f"{'%0.02f' % self.pc_nice},"
-                            f"{'%0.02f' % self.pc_system},"
-                            f"{'%0.02f' % self.pc_idle},"
-                            f"{'%0.02f' % self.pc_iowait},"
-                            f"{'%0.02f' % self.pc_irq},"
-                            f"{'%0.02f' % self.pc_guest}\n")
+        self.machine_csv.write(
+            f"{datetime.fromtimestamp(timestamp)},"
+            f"{'%0.02f' % self.pc_user},"
+            f"{'%0.02f' % self.pc_nice},"
+            f"{'%0.02f' % self.pc_system},"
+            f"{'%0.02f' % self.pc_idle},"
+            f"{'%0.02f' % self.pc_iowait},"
+            f"{'%0.02f' % self.pc_irq},"
+            f"{'%0.02f' % self.pc_guest}\n"
+        )
 
     def get_machine_stat(self):
         self.last_scrape_ts = time.time()
-        with open('/proc/stat', 'r') as f:
+        with open("/proc/stat", "r") as f:
             cpu = f.readline().split()
         self.last_cpu_user = int(cpu[1])
         self.last_cpu_nice = int(cpu[2])
@@ -817,30 +872,29 @@ class Machine:
         cgroup2_path = "/sys/fs/cgroup/cgroup.controllers"
         isfile = os.path.exists(cgroup2_path)
         if isfile:
-            return(2)
+            return 2
         else:
-            return(1)
+            return 1
 
     def get_cpuset_mount_point(self):
-        with open('/proc/mounts', 'r') as f:
-            mounts = f.read().split('\n')
+        with open("/proc/mounts", "r") as f:
+            mounts = f.read().split("\n")
         for m in mounts:
             m = m.split()
 
             # Avoid scenrio where m is empty
             if m:
-                if m[0] == 'cgroup' or m[0] == 'cgroup2':
-                    if 'unified' in m[1]:
+                if m[0] == "cgroup" or m[0] == "cgroup2":
+                    if "unified" in m[1]:
                         continue
-                    if 'cpuset' in m[3]:
+                    if "cpuset" in m[3]:
                         self.cpuset_mount_point = m[1]
                         return
-                    elif 'cgroup2' in m[2]:
+                    elif "cgroup2" in m[2]:
                         self.cpuset_mount_point = m[1]
                         return
         if self.cpuset_mount_point is None:
             print("Cgroup cpuset path not found")
-
 
     def refresh_stats(self):
         for node in self.nodes.values():
@@ -928,7 +982,7 @@ class Machine:
         nodes = []
         fullpath = "%s/%s/cpuset.cpus" % (self.cpuset_mount_point, cpuset)
         if os.path.exists(fullpath):
-            with open(fullpath, 'r') as f:
+            with open(fullpath, "r") as f:
                 cpus = mixrange(f.read())
             for c in cpus:
                 for n in self.nodes.values():
@@ -976,8 +1030,12 @@ class Machine:
     def list_vms(self, progress=False):
         cmd = ["pgrep", "qemu"]
         try:
-            pids = subprocess.check_output(
-                    cmd, shell=False).strip().decode("utf-8").split('\n')
+            pids = (
+                subprocess.check_output(cmd, shell=False)
+                .strip()
+                .decode("utf-8")
+                .split("\n")
+            )
         except subprocess.CalledProcessError:
             l = list(self.all_vms.keys())
             for v in l:
@@ -993,7 +1051,7 @@ class Machine:
                 return
             nr += 1
             if progress is True:
-                print("%d VMs" % nr, end='\r')
+                print("%d VMs" % nr, end="\r")
             pid = int(pid)
             if pid in self.all_vms.keys():
                 previous_vm_list.remove(pid)
@@ -1033,6 +1091,7 @@ TRACEPOINT_PROBE(kvm, kvm_exit)
 """
         self.bpf = BPF(text=bpf_text)
 
+
 class VmTop:
     def __init__(self, args):
         self.args = args
@@ -1060,34 +1119,46 @@ class VmTop:
 
         # Scan for new VMs and memory/vcpu allocation in the background
         self.vm_alloc_thread = threading.Thread(
-                target=self.machine.refresh_vm_allocation)
+            target=self.machine.refresh_vm_allocation
+        )
         self.vm_alloc_thread.start()
 
     def setup_prometheus(self):
         if not self.args.prometheus:
             return
-        self.vm_mb_read_gauge = Gauge("vm_mbread", "mb read for vm", ['vm'])
-        self.vm_mb_write_gauge = Gauge("vm_mbwrite", "mb write for vm", ['vm'])
-        self.vm_rx_rate_gauge = Gauge("vm_rxrate", "rx rate for vm", ['vm'])
-        self.vm_tx_rate_gauge = Gauge("vm_txrate", "tx rate for vm", ['vm'])
-        self.vm_rx_rate_dropped_gauge = Gauge("vm_rxratedropped", "rx drop rate for vm", ['vm'])
-        self.vm_tx_rate_dropped_gauge = Gauge("vm_txrateddropped", "tx drop rate for vm", ['vm'])
-        self.vm_vcpu_util_gauge = Gauge("vm_vcpu_util", "VCPU util", ['vm'])
-        self.vm_vcpu_steal_gauge = Gauge("vm_vcpu_steal", "VCPU util", ['vm'])
-        self.vm_vhost_util_gauge = Gauge("vm_vhost_util", "vhost util", ['vm'])
-        self.vm_vhost_steal_gauge = Gauge("vm_vhost_steal", "vhost steal", ['vm'])
-        self.vm_emulators_util_gauge = Gauge("vm_emulators_util", "emulators util", ['vm'])
-        self.vm_emulators_steal_gauge = Gauge("vm_emulators_steal", "emulators steal", ['vm'])
+        self.vm_mb_read_gauge = Gauge("vm_mbread", "mb read for vm", ["vm"])
+        self.vm_mb_write_gauge = Gauge("vm_mbwrite", "mb write for vm", ["vm"])
+        self.vm_rx_rate_gauge = Gauge("vm_rxrate", "rx rate for vm", ["vm"])
+        self.vm_tx_rate_gauge = Gauge("vm_txrate", "tx rate for vm", ["vm"])
+        self.vm_rx_rate_dropped_gauge = Gauge(
+            "vm_rxratedropped", "rx drop rate for vm", ["vm"]
+        )
+        self.vm_tx_rate_dropped_gauge = Gauge(
+            "vm_txrateddropped", "tx drop rate for vm", ["vm"]
+        )
+        self.vm_vcpu_util_gauge = Gauge("vm_vcpu_util", "VCPU util", ["vm"])
+        self.vm_vcpu_steal_gauge = Gauge("vm_vcpu_steal", "VCPU util", ["vm"])
+        self.vm_vhost_util_gauge = Gauge("vm_vhost_util", "vhost util", ["vm"])
+        self.vm_vhost_steal_gauge = Gauge("vm_vhost_steal", "vhost steal", ["vm"])
+        self.vm_emulators_util_gauge = Gauge(
+            "vm_emulators_util", "emulators util", ["vm"]
+        )
+        self.vm_emulators_steal_gauge = Gauge(
+            "vm_emulators_steal", "emulators steal", ["vm"]
+        )
         if self.args.vmexit is True:
-            self.vm_vmexits_gauge = Gauge("vm_vmexit_rate", "vm exit rate", ['vm'])
+            self.vm_vmexits_gauge = Gauge("vm_vmexit_rate", "vm exit rate", ["vm"])
 
-        self.vcpu_util_gauge = Gauge("node_vcpuutil", "VCPU util", ['node'])
-        self.vcpu_steal_gauge = Gauge("node_vcpusteal", "VCPU util", ['node'])
-        self.vhost_util_gauge = Gauge("node_vhostutil", "vhost util", ['node'])
-        self.vhost_steal_gauge = Gauge("node_vhoststeal", "vhost steal", ['node'])
-        self.emulators_util_gauge = Gauge("node_emulatorutil", "emulators util", ['node'])
-        self.emulators_steal_gauge = Gauge("node_emulatorsteal", "emulators steal", ['node'])
-
+        self.vcpu_util_gauge = Gauge("node_vcpuutil", "VCPU util", ["node"])
+        self.vcpu_steal_gauge = Gauge("node_vcpusteal", "VCPU util", ["node"])
+        self.vhost_util_gauge = Gauge("node_vhostutil", "vhost util", ["node"])
+        self.vhost_steal_gauge = Gauge("node_vhoststeal", "vhost steal", ["node"])
+        self.emulators_util_gauge = Gauge(
+            "node_emulatorutil", "emulators util", ["node"]
+        )
+        self.emulators_steal_gauge = Gauge(
+            "node_emulatorsteal", "emulators steal", ["node"]
+        )
 
     def open_csv_files(self):
         try:
@@ -1106,7 +1177,7 @@ class VmTop:
     def check_diskspace(self):
         # Be nice and abort if disk left is less than 1GB
         if self.args.csv is not None:
-            if shutil.disk_usage(self.args.csv)[2] < 1*1024*1024*1024:
+            if shutil.disk_usage(self.args.csv)[2] < 1 * 1024 * 1024 * 1024:
                 print("Less than 1GB available on disk, exiting")
                 return False
 
@@ -1133,7 +1204,10 @@ class VmTop:
             if node.vcpu_sum_pc_steal > busiest_node_steal:
                 busiest_node_steal = node.vcpu_sum_pc_steal
                 busiest_node = node
-            if calmest_node_steal is None or node.vcpu_sum_pc_steal < calmest_node_steal:
+            if (
+                calmest_node_steal is None
+                or node.vcpu_sum_pc_steal < calmest_node_steal
+            ):
                 calmest_node_steal = node.vcpu_sum_pc_steal
                 calmest_node = node
 
@@ -1149,46 +1223,65 @@ class VmTop:
         else:
             to_calm = True
 
-        busiest_vm = sorted(busiest_node.node_vms.values(),
-                            key=operator.attrgetter("vcpu_sum_pc_util"),
-                            reverse=True)[0]
+        busiest_vm = sorted(
+            busiest_node.node_vms.values(),
+            key=operator.attrgetter("vcpu_sum_pc_util"),
+            reverse=True,
+        )[0]
 
         calmest_vm = None
         try:
             self.machine.nodes_lock.acquire()
-            for vm in sorted(calmest_node.node_vms.values(),
-                            key=operator.attrgetter("vcpu_sum_pc_util"),
-                            reverse=False):
+            for vm in sorted(
+                calmest_node.node_vms.values(),
+                key=operator.attrgetter("vcpu_sum_pc_util"),
+                reverse=False,
+            ):
                 if vm.vcpu_sum_pc_util > 60:
                     break
-                if vm.nr_vcpus == busiest_vm.nr_vcpus and \
-                        vm.mem_allocated == busiest_vm.mem_allocated:
+                if (
+                    vm.nr_vcpus == busiest_vm.nr_vcpus
+                    and vm.mem_allocated == busiest_vm.mem_allocated
+                ):
                     calmest_vm = vm
                     break
         finally:
             self.machine.nodes_lock.release()
 
         if calmest_vm is None:
-            print("Didn't find a candidate to swap with %s (%s): %d vcpus, %m mem" % (
-                busiest_vm.name, busiest_vm.vm_pid, busiest_vm.nr_vcpus,
-                busiest_vm.mem_allocated))
+            print(
+                "Didn't find a candidate to swap with %s (%s): %d vcpus, %m mem"
+                % (
+                    busiest_vm.name,
+                    busiest_vm.vm_pid,
+                    busiest_vm.nr_vcpus,
+                    busiest_vm.mem_allocated,
+                )
+            )
             return
 
         if to_calm is True:
-            print(f"Would migrate {busiest_vm.name} ({busiest_vm.vm_pid}) "
-                  f"{'%0.02f%%' % (busiest_vm.vcpu_sum_pc_util)} from node "
-                  f"{busiest_node.id} to node {calmest_node.id}")
-            print(f"Would migrate {calmest_vm.name} ({calmest_vm.vm_pid}) "
-                  f"{'%0.02f%%' % (calmest_vm.vcpu_sum_pc_util)} from node "
-                  f"{calmest_node.id} to node {busiest_node.id}")
+            print(
+                f"Would migrate {busiest_vm.name} ({busiest_vm.vm_pid}) "
+                f"{'%0.02f%%' % (busiest_vm.vcpu_sum_pc_util)} from node "
+                f"{busiest_node.id} to node {calmest_node.id}"
+            )
+            print(
+                f"Would migrate {calmest_vm.name} ({calmest_vm.vm_pid}) "
+                f"{'%0.02f%%' % (calmest_vm.vcpu_sum_pc_util)} from node "
+                f"{calmest_node.id} to node {busiest_node.id}"
+            )
         else:
-            print(f"Would migrate {calmest_vm.name} ({calmest_vm.vm_pid}) "
-                  f"{'%0.02f%%' % (calmest_vm.vcpu_sum_pc_util)} from node "
-                  f"{calmest_node.id} to node {busiest_node.id}")
-            print(f"Would migrate {busiest_vm.name} ({busiest_vm.vm_pid}) "
-                  f"{'%0.02f%%' % (busiest_vm.vcpu_sum_pc_util)} from node "
-                  f"{busiest_node.id} to node {calmest_node.id}")
-
+            print(
+                f"Would migrate {calmest_vm.name} ({calmest_vm.vm_pid}) "
+                f"{'%0.02f%%' % (calmest_vm.vcpu_sum_pc_util)} from node "
+                f"{calmest_node.id} to node {busiest_node.id}"
+            )
+            print(
+                f"Would migrate {busiest_vm.name} ({busiest_vm.vm_pid}) "
+                f"{'%0.02f%%' % (busiest_vm.vcpu_sum_pc_util)} from node "
+                f"{busiest_node.id} to node {calmest_node.id}"
+            )
 
     def stop(self):
         exit_gracefully(0, 0)
@@ -1223,24 +1316,25 @@ class VmTop:
                 if self.args.vm and self.csv is False:
                     print("Node %d:" % node.id)
                     if not self.args.vcpu:
-                        first_row = ['name', 'PID']
+                        first_row = ["name", "PID"]
                         for i in self.args.display_metrics:
                             first_row.append(self.args.vm_metrics[i][0])
-                        second_row = ['', '']
+                        second_row = ["", ""]
                         for i in self.args.display_metrics:
                             second_row.append(self.args.vm_metrics[i][1])
                         print(self.args.vm_format.format(*first_row))
                         print(self.args.vm_format.format(*second_row))
-                for vm in (sorted(node.node_vms.values(),
-                                  key=operator.attrgetter(self.args.sort),
-                                  reverse=True)):
+                for vm in sorted(
+                    node.node_vms.values(),
+                    key=operator.attrgetter(self.args.sort),
+                    reverse=True,
+                ):
                     if self.args.vm:
                         if self.args.pid is not None:
                             if vm.vm_pid in self.args.pids:
                                 print(vm)
                         else:
-                            if self.args.limit is not None and \
-                                    nr >= self.args.limit:
+                            if self.args.limit is not None and nr >= self.args.limit:
                                 break
                             if self.csv is True:
                                 vm.output_vm_csv(timestamp)
@@ -1248,41 +1342,75 @@ class VmTop:
                                 print(vm)
                             nr += 1
                     if self.args.prometheus:
-                        self.vm_vcpu_util_gauge.labels(vm=vm.name).set(vm.vcpu_sum_pc_util)
-                        self.vm_vcpu_steal_gauge.labels(vm=vm.name).set(vm.vcpu_sum_pc_steal)
-                        self.vm_vhost_util_gauge.labels(vm=vm.name).set(vm.vhost_sum_pc_util)
-                        self.vm_vhost_steal_gauge.labels(vm=vm.name).set(vm.vhost_sum_pc_steal)
-                        self.vm_emulators_util_gauge.labels(vm=vm.name).set(vm.emulators_sum_pc_util)
-                        self.vm_emulators_steal_gauge.labels(vm=vm.name).set(vm.emulators_sum_pc_steal)
+                        self.vm_vcpu_util_gauge.labels(vm=vm.name).set(
+                            vm.vcpu_sum_pc_util
+                        )
+                        self.vm_vcpu_steal_gauge.labels(vm=vm.name).set(
+                            vm.vcpu_sum_pc_steal
+                        )
+                        self.vm_vhost_util_gauge.labels(vm=vm.name).set(
+                            vm.vhost_sum_pc_util
+                        )
+                        self.vm_vhost_steal_gauge.labels(vm=vm.name).set(
+                            vm.vhost_sum_pc_steal
+                        )
+                        self.vm_emulators_util_gauge.labels(vm=vm.name).set(
+                            vm.emulators_sum_pc_util
+                        )
+                        self.vm_emulators_steal_gauge.labels(vm=vm.name).set(
+                            vm.emulators_sum_pc_steal
+                        )
                         self.vm_mb_read_gauge.labels(vm=vm.name).set(vm.mb_read)
                         self.vm_mb_write_gauge.labels(vm=vm.name).set(vm.mb_write)
                         self.vm_rx_rate_gauge.labels(vm=vm.name).set(vm.rx_rate)
                         self.vm_tx_rate_gauge.labels(vm=vm.name).set(vm.tx_rate)
-                        self.vm_rx_rate_dropped_gauge.labels(vm=vm.name).set(vm.rx_rate_dropped)
-                        self.vm_tx_rate_dropped_gauge.labels(vm=vm.name).set(vm.tx_rate_dropped)
+                        self.vm_rx_rate_dropped_gauge.labels(vm=vm.name).set(
+                            vm.rx_rate_dropped
+                        )
+                        self.vm_tx_rate_dropped_gauge.labels(vm=vm.name).set(
+                            vm.tx_rate_dropped
+                        )
                         if self.args.vmexit is True:
-                            self.vm_vmexits_gauge.labels(vm=vm.name).set(vm.last_vmexit_diff)
+                            self.vm_vmexits_gauge.labels(vm=vm.name).set(
+                                vm.last_vmexit_diff
+                            )
 
                 if self.csv:
                     node.output_node_csv(timestamp)
                 else:
-                    print("  Node %d: vcpu util: %0.02f%%, "
-                          "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
-                          "emulators steal: %0.02f%%" % (
-                              node.id,
-                              node.node_vcpu_sum_pc_util,
-                              node.node_vcpu_sum_pc_steal,
-                              node.node_emulators_sum_pc_util,
-                              node.node_emulators_sum_pc_steal))
+                    print(
+                        "  Node %d: vcpu util: %0.02f%%, "
+                        "vcpu steal: %0.02f%%, emulators util: %0.02f%%, "
+                        "emulators steal: %0.02f%%"
+                        % (
+                            node.id,
+                            node.node_vcpu_sum_pc_util,
+                            node.node_vcpu_sum_pc_steal,
+                            node.node_emulators_sum_pc_util,
+                            node.node_emulators_sum_pc_steal,
+                        )
+                    )
                     self.machine.print_node_count(node.id)
 
                 if self.args.prometheus:
-                    self.vcpu_util_gauge.labels(node=node.id).set(node.node_vcpu_sum_pc_util)
-                    self.vcpu_steal_gauge.labels(node=node.id).set(node.node_vcpu_sum_pc_steal)
-                    self.vhost_util_gauge.labels(node=node.id).set(node.node_vhost_sum_pc_util)
-                    self.vhost_steal_gauge.labels(node=node.id).set(node.node_vhost_sum_pc_steal)
-                    self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_util)
-                    self.emulators_steal_gauge.labels(node=node.id).set(node.node_emulators_sum_pc_steal)
+                    self.vcpu_util_gauge.labels(node=node.id).set(
+                        node.node_vcpu_sum_pc_util
+                    )
+                    self.vcpu_steal_gauge.labels(node=node.id).set(
+                        node.node_vcpu_sum_pc_steal
+                    )
+                    self.vhost_util_gauge.labels(node=node.id).set(
+                        node.node_vhost_sum_pc_util
+                    )
+                    self.vhost_steal_gauge.labels(node=node.id).set(
+                        node.node_vhost_sum_pc_steal
+                    )
+                    self.emulators_steal_gauge.labels(node=node.id).set(
+                        node.node_emulators_sum_pc_util
+                    )
+                    self.emulators_steal_gauge.labels(node=node.id).set(
+                        node.node_emulators_sum_pc_steal
+                    )
 
         self.wait_refresh()
 
@@ -1302,59 +1430,91 @@ class VmTop:
             self.run_once()
         self.stop()
 
+
 def exit_gracefully(signum, frame):
     global stop
     stop = True
+
 
 def start_prometheus_client(ip, port):
     start_http_server(int(port), ip)
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     ret = s.connect_ex((ip, int(port)))
     if ret == 0:
-        print("Prometheus listening on %s:%s" %(ip, port))
+        print("Prometheus listening on %s:%s" % (ip, port))
     else:
-        print("Prometheus not listening on %s:%s. Please check if the specified port is not in use already" %(ip, port))
+        print(
+            "Prometheus not listening on %s:%s. Please check if the specified port is not in use already"
+            % (ip, port)
+        )
         exit(1)
 
+
 def parse_args():
-    parser = argparse.ArgumentParser(description='Monitor local steal')
-    parser.add_argument('-r', '--refresh', type=int, default=1,
-                        help='refresh rate (seconds)')
-    parser.add_argument('-l', '--limit', type=int,
-                        help='limit to top X VMs per node')
-    parser.add_argument('-n', '--number', type=int, default=0,
-                        help='gather stats N times and exit')
-    parser.add_argument('-s', '--sort', type=str,
-                        choices=['vcpu_util', 'vcpu_steal',
-                                 'vhost_util', 'vhost_steal',
-                                 'disk_read', 'disk_write',
-                                 'emulators_util', 'emulators_steal',
-                                 'rx', 'tx', 'rx_dropped', 'tx_dropped'],
-                        default='vcpu_util',
-                        help='sort order for VM list, default: vcpu_util')
-    parser.add_argument('-p', '--pid', type=str,
-                        help='Limit to pid (csv), implies --vm')
-    parser.add_argument('--vcpu', action='store_true',
-                        help='show vcpu stats (implies --vm)')
-    parser.add_argument('--daemon', action='store_true',
-                        help='daemonize vmtop (works with --csv or --prometheus)')
-    parser.add_argument('--no-nic', action='store_true',
-                        help='Don\'t collect NIC info')
-    parser.add_argument('--csv', type=str,
-                        help='Output as CSV files in provided folder name')
-    parser.add_argument('--emulators', action='store_true',
-                        help='show emulators stats (implies --vm)')
-    parser.add_argument('--balance', action='store_true',
-                        help='Propose a way to balance load between nodes')
-    parser.add_argument('--vm', action='store_true',
-                        help='show vm stats')
-    parser.add_argument('--node', type=str,
-                        help='Limit to specific NUMA node (csv)')
-    parser.add_argument('--vmexit', action='store_true',
-                        help='show vm exit rates and reasons')
-    parser.add_argument('--prometheus', nargs='?', const="localhost:8000",
-                        help='enable the prometheus exporter, optionally specify host:port')
- 
+    parser = argparse.ArgumentParser(description="Monitor local steal")
+    parser.add_argument(
+        "-r", "--refresh", type=int, default=1, help="refresh rate (seconds)"
+    )
+    parser.add_argument("-l", "--limit", type=int, help="limit to top X VMs per node")
+    parser.add_argument(
+        "-n", "--number", type=int, default=0, help="gather stats N times and exit"
+    )
+    parser.add_argument(
+        "-s",
+        "--sort",
+        type=str,
+        choices=[
+            "vcpu_util",
+            "vcpu_steal",
+            "vhost_util",
+            "vhost_steal",
+            "disk_read",
+            "disk_write",
+            "emulators_util",
+            "emulators_steal",
+            "rx",
+            "tx",
+            "rx_dropped",
+            "tx_dropped",
+        ],
+        default="vcpu_util",
+        help="sort order for VM list, default: vcpu_util",
+    )
+    parser.add_argument(
+        "-p", "--pid", type=str, help="Limit to pid (csv), implies --vm"
+    )
+    parser.add_argument(
+        "--vcpu", action="store_true", help="show vcpu stats (implies --vm)"
+    )
+    parser.add_argument(
+        "--daemon",
+        action="store_true",
+        help="daemonize vmtop (works with --csv or --prometheus)",
+    )
+    parser.add_argument("--no-nic", action="store_true", help="Don't collect NIC info")
+    parser.add_argument(
+        "--csv", type=str, help="Output as CSV files in provided folder name"
+    )
+    parser.add_argument(
+        "--emulators", action="store_true", help="show emulators stats (implies --vm)"
+    )
+    parser.add_argument(
+        "--balance",
+        action="store_true",
+        help="Propose a way to balance load between nodes",
+    )
+    parser.add_argument("--vm", action="store_true", help="show vm stats")
+    parser.add_argument("--node", type=str, help="Limit to specific NUMA node (csv)")
+    parser.add_argument(
+        "--vmexit", action="store_true", help="show vm exit rates and reasons"
+    )
+    parser.add_argument(
+        "--prometheus",
+        nargs="?",
+        const="localhost:8000",
+        help="enable the prometheus exporter, optionally specify host:port",
+    )
+
     args = parser.parse_args()
 
     if args.vcpu is True or args.emulators is True:
@@ -1362,76 +1522,81 @@ def parse_args():
     if args.pid is not None:
         args.vm = True
         args.pids = []
-        for i in args.pid.split(','):
+        for i in args.pid.split(","):
             args.pids.append(int(i))
     # Sort mapping to variable name
-    if args.sort == 'vcpu_util':
-        args.sort = 'vcpu_sum_pc_util'
-    elif args.sort == 'vcpu_steal':
-        args.sort = 'vcpu_sum_pc_steal'
-    elif args.sort == 'vhost_util':
-        args.sort = 'vhost_sum_pc_util'
-    elif args.sort == 'vhost_steal':
-        args.sort = 'vhost_sum_pc_steal'
-    elif args.sort == 'emulators_util':
-        args.sort = 'emulators_sum_pc_util'
-    elif args.sort == 'emulators_steal':
-        args.sort = 'emulators_sum_pc_steal'
-    elif args.sort == 'disk_read':
-        args.sort = 'mb_read'
-    elif args.sort == 'disk_write':
-        args.sort = 'mb_write'
-    elif args.sort == 'rx':
-        args.sort = 'rx_rate'
-    elif args.sort == 'tx':
-        args.sort = 'tx_rate'
-    elif args.sort == 'rx_dropped':
-        args.sort = 'rx_rate_dropped'
-    elif args.sort == 'tx_dropped':
-        args.sort = 'tx_rate_dropped'
+    if args.sort == "vcpu_util":
+        args.sort = "vcpu_sum_pc_util"
+    elif args.sort == "vcpu_steal":
+        args.sort = "vcpu_sum_pc_steal"
+    elif args.sort == "vhost_util":
+        args.sort = "vhost_sum_pc_util"
+    elif args.sort == "vhost_steal":
+        args.sort = "vhost_sum_pc_steal"
+    elif args.sort == "emulators_util":
+        args.sort = "emulators_sum_pc_util"
+    elif args.sort == "emulators_steal":
+        args.sort = "emulators_sum_pc_steal"
+    elif args.sort == "disk_read":
+        args.sort = "mb_read"
+    elif args.sort == "disk_write":
+        args.sort = "mb_write"
+    elif args.sort == "rx":
+        args.sort = "rx_rate"
+    elif args.sort == "tx":
+        args.sort = "tx_rate"
+    elif args.sort == "rx_dropped":
+        args.sort = "rx_rate_dropped"
+    elif args.sort == "tx_dropped":
+        args.sort = "tx_rate_dropped"
 
     # list of metrics we want to display by VM (needs to become user-definable)
     args.display_metrics = [
-            'vcpu_sum_pc_util',
-            'vcpu_sum_pc_steal',
-            'vhost_sum_pc_util',
-            'vhost_sum_pc_steal',
-            'emulators_sum_pc_util',
-            'emulators_sum_pc_steal',
-            'mb_read',
-            'mb_write',
-            'rx_rate',
-            'tx_rate',
-            'rx_rate_dropped',
-            'tx_rate_dropped',
-            'last_vmexit_diff']
+        "vcpu_sum_pc_util",
+        "vcpu_sum_pc_steal",
+        "vhost_sum_pc_util",
+        "vhost_sum_pc_steal",
+        "emulators_sum_pc_util",
+        "emulators_sum_pc_steal",
+        "mb_read",
+        "mb_write",
+        "rx_rate",
+        "tx_rate",
+        "rx_rate_dropped",
+        "tx_rate_dropped",
+        "last_vmexit_diff",
+    ]
     # Format and legend for each metric
-    args.vm_metrics = {'vcpu_sum_pc_util': ['vcpu', 'util%', '8s'],
-                       'vcpu_sum_pc_steal': ['vcpu', 'steal%', '8s'],
-                       'vhost_sum_pc_util': ['vhost', 'util%', '8s'],
-                       'vhost_sum_pc_steal': ['vhost', 'steal%', '8s'],
-                       'emulators_sum_pc_util': ['emu', 'util%', '8s'],
-                       'emulators_sum_pc_steal': ['emu', 'steal%', '8s'],
-                       'mb_read': ['disk', 'rd MB/s', '8s'],
-                       'mb_write': ['disk', 'wr MB/s', '8s'],
-                       'rx_rate': ['rx', 'Mbps', '8s'],
-                       'tx_rate': ['tx', 'Mbps', '8s'],
-                       'rx_rate_dropped': ['rx_drop', 'pkt/s', '8s'],
-                       'tx_rate_dropped': ['tx_drop', 'pkt/s', '9s'],
-                       'last_vmexit_diff': ['vmexit', 'count', '8s']}
-    args.vm_format = '{:<19s}{:<8s}'
+    args.vm_metrics = {
+        "vcpu_sum_pc_util": ["vcpu", "util%", "8s"],
+        "vcpu_sum_pc_steal": ["vcpu", "steal%", "8s"],
+        "vhost_sum_pc_util": ["vhost", "util%", "8s"],
+        "vhost_sum_pc_steal": ["vhost", "steal%", "8s"],
+        "emulators_sum_pc_util": ["emu", "util%", "8s"],
+        "emulators_sum_pc_steal": ["emu", "steal%", "8s"],
+        "mb_read": ["disk", "rd MB/s", "8s"],
+        "mb_write": ["disk", "wr MB/s", "8s"],
+        "rx_rate": ["rx", "Mbps", "8s"],
+        "tx_rate": ["tx", "Mbps", "8s"],
+        "rx_rate_dropped": ["rx_drop", "pkt/s", "8s"],
+        "tx_rate_dropped": ["tx_drop", "pkt/s", "9s"],
+        "last_vmexit_diff": ["vmexit", "count", "8s"],
+    }
+    args.vm_format = "{:<19s}{:<8s}"
     for m in args.display_metrics:
         args.vm_format = "%s{:<%s}" % (args.vm_format, args.vm_metrics[m][2])
 
     # filter by node
     if args.node is not None:
         nodes = []
-        for n in args.node.split(','):
+        for n in args.node.split(","):
             nodes.append(int(n))
         args.node = nodes
 
     if args.prometheus and import_failed_prometheus:
-        print("Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus")
+        print(
+            "Warning: python3-prometheus-client not found! Please install and re-run or remove --prometheus"
+        )
         exit(1)
 
     if args.daemon and import_failed_daemon:
@@ -1458,24 +1623,24 @@ def main():
     # With daemon option, prometheus will be run after
     # daemonizing below
     if args.prometheus and not args.daemon:
-            ip, port = args.prometheus.split(':')
-            start_prometheus_client(ip, port)
+        ip, port = args.prometheus.split(":")
+        start_prometheus_client(ip, port)
 
     # Daemonize vmtop if --daemon option specificed
     # Supported with --csv and --prometheus flags
     if args.daemon and args.csv is not None or args.prometheus and args.daemon:
         cwd = os.getcwd()
-        with daemon.DaemonContext(stdout=sys.stdout,
-            stderr = sys.stdout,
-            working_directory = cwd,
-            umask = 0o002,
-            signal_map={
-            signal.SIGTERM: exit_gracefully
-        }):
+        with daemon.DaemonContext(
+            stdout=sys.stdout,
+            stderr=sys.stdout,
+            working_directory=cwd,
+            umask=0o002,
+            signal_map={signal.SIGTERM: exit_gracefully},
+        ):
             # Daemonizing kills all the previously opened sockets, so
             # run prometheus after daemonizing
             if args.prometheus:
-                ip, port = args.prometheus.split(':')
+                ip, port = args.prometheus.split(":")
                 start_prometheus_client(ip, port)
 
             s = VmTop(args)
@@ -1496,5 +1661,6 @@ def main():
 
     return 0
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     sys.exit(main())

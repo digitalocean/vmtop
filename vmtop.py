@@ -58,6 +58,11 @@ def read_int(filename):
 
 def mixrange(s):
     r = []
+    if not s:
+        return r
+    if s == '\n':
+        return r
+
     for i in s.split(","):
         if "-" not in i:
             r.append(int(i))
@@ -304,6 +309,8 @@ class VM:
         return len(self.vcpu_threads.keys())
 
     def set_vcpu_primary_node(self, new_node):
+        if new_node is None:
+            return
         if self.vcpu_primary_node == new_node:
             return
         if self.vcpu_primary_node is not None:
@@ -530,6 +537,11 @@ class VM:
                 self.last_io_write_bytes = int(l[1])
 
     def get_node_memory(self):
+        path = shutil.which("numastat")
+        if path is None:
+            print("no executable found for numastat")
+            return
+
         cmd = ["numastat", "-p", str(self.vm_pid)]
         try:
             usage = subprocess.check_output(

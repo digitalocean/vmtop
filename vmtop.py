@@ -309,6 +309,8 @@ class VM:
         return len(self.vcpu_threads.keys())
 
     def set_vcpu_primary_node(self, new_node):
+        if new_node is None:
+            return
         if self.vcpu_primary_node == new_node:
             return
         if self.vcpu_primary_node is not None:

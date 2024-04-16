@@ -58,6 +58,11 @@ def read_int(filename):
 
 def mixrange(s):
     r = []
+    if not s:
+        return r
+    if s == '\n':
+        return r
+
     for i in s.split(","):
         if "-" not in i:
             r.append(int(i))

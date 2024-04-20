@@ -49,6 +49,79 @@ except ImportError:
 
 stop = False
 
+# kvm exit reason format output
+exit_reasons = (
+    "exception_nmi",
+    "external_interrupt",
+    "triple_fault",
+    "init_signal",
+    "n/a",
+    "n/a",
+    "n/a",
+    "interrupt_window",
+    "nmi_window",
+    "task_switch",
+    "cpuid",
+    "n/a",
+    "hlt",
+    "invd",
+    "invlpg",
+    "rdpmc",
+    "rdtsc",
+    "n/a",
+    "vmcall",
+    "vmclear",
+    "vmlaunch",
+    "vmptrld",
+    "vmptrst",
+    "vmread",
+    "vmresume",
+    "vmwrite",
+    "vmoff",
+    "vmon",
+    "cr_access",
+    "dr_access",
+    "io_instruction",
+    "msr_read",
+    "msr_write",
+    "invalid_state",
+    "msr_load_fail",
+    "n/a",
+    "mwait_instruction",
+    "monitor_trap_flag",
+    "n/a",
+    "monitor_instruction",
+    "pause_instruction",
+    "mce_during_vmentry",
+    "n/a",
+    "tpr_below_threshold",
+    "apic_access",
+    "eoi_induced",
+    "gdtr_idtr",
+    "ldtr_tr",
+    "ept_violation",
+    "ept_misconfig",
+    "invept",
+    "rdtscp",
+    "preemption_timer",
+    "invvpid",
+    "wbinvd",
+    "xsetbv",
+    "apic_write",
+    "rdrand",
+    "invpcid",
+    "vmfunc",
+    "encls",
+    "rdseed",
+    "pml_full",
+    "xsaves",
+    "xrstors",
+    "n/a",
+    "n/a",
+    "umwait",
+    "tpause",
+)
+
 
 def read_str(filename):
     with open(filename, "r") as fd:
@@ -312,6 +385,10 @@ class VM:
         self.last_vmexit_count = 0
         self.last_vmexit_diff = 0
 
+        self.last_exit_reason_count = [0] * len(exit_reasons)
+        self.last_exit_reason_diff = [0] * len(exit_reasons)
+        self.vmexit_details = {}
+
         self.get_vm_info()
         if self.args.csv is not None and self.args.vm is True:
             self.open_vm_csv()
@@ -389,6 +466,19 @@ class VM:
             c = self.machine.bpf["exitcount"][ctypes.c_uint(self.vm_pid)].value
             self.last_vmexit_diff = c - self.last_vmexit_count
             self.last_vmexit_count = c
+
+            exit_reason_count = self.machine.bpf["exit_reason_count"].items()
+            for k, v in exit_reason_count:
+                if k.value == self.vm_pid:
+                    for i in range(0, len(exit_reasons)):
+                        cur = v.exit_ct[i]
+                        self.last_exit_reason_diff[i] = (
+                            cur - self.last_exit_reason_count[i]
+                        )
+                        self.last_exit_reason_count[i] = cur
+                        self.vmexit_details[exit_reasons[i]] = (
+                            self.last_exit_reason_diff[i]
+                        )
         except:
             pass
 
@@ -481,6 +571,10 @@ class VM:
             f"{'%0.02f' % (abs(self.tx_rate_dropped))},"
             f"{'%d' % (self.last_vmexit_diff)}\n"
         )
+        vmexit_str = "".join(
+            ["{0}: {1}, ".format(k, v) for k, v in self.vmexit_details.items()]
+        )
+        self.csv.write(f"{'%s' % (vmexit_str)}\n")
         self.csv.flush()
 
     def get_nic_info(self):
@@ -1081,11 +1175,40 @@ class Machine:
     def attach_bpf(self):
         bpf_text = """
 #include <uapi/linux/ptrace.h>
+#define REASON_NUM 69
+struct exit_count {
+    u64 exit_ct[REASON_NUM];
+};
+
+BPF_PERCPU_ARRAY(init_value, struct exit_count, 1);
 BPF_HASH(exitcount, u32, uint32_t);
+BPF_HASH(exit_reason_count, u32, struct exit_count);
 
 TRACEPOINT_PROBE(kvm, kvm_exit)
 {
-    exitcount.increment(bpf_get_current_pid_tgid() >> 32);
+    u32 er = args->exit_reason;
+    u32 cur_pid_tgid = (bpf_get_current_pid_tgid() >> 32);
+    exitcount.increment(cur_pid_tgid);
+
+    struct exit_count *tmp_info = NULL, *initial = NULL;
+    int zero = 0;
+
+    tmp_info = exit_reason_count.lookup(&cur_pid_tgid);
+    if (tmp_info == NULL) {
+        initial = init_value.lookup(&zero);
+        if (initial == NULL) {
+            return 0;
+        }
+        exit_reason_count.update(&cur_pid_tgid, initial);
+        tmp_info = exit_reason_count.lookup(&cur_pid_tgid);
+        if (tmp_info == NULL) {
+            return 0;
+        }
+    }
+    if (er < REASON_NUM) {
+        tmp_info->exit_ct[er]++;
+    }
+
     return 0;
 }
 """
